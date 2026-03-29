@@ -21,6 +21,11 @@ dependencies = [
     "tqdm==4.67.3",
     "transformers==5.4.0",
 ]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [[tool.uv.index]]
 name = "pytorch-cu130"
 url = "https://download.pytorch.org/whl/cu130"
