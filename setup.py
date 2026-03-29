@@ -37,12 +37,18 @@ def get_required_python():
         print("No pyproject.toml found")
         sys.exit(1)
 
-    with open("pyproject.toml") as f:
-        for line in f:
-            if "requires-python" in line:
-                match = re.search(r"[\d]+\.[\d]+\.[\d]+", line)
-                if match:
-                    return match.group()
+    with open("pyproject.toml", encoding="utf-8-sig") as f:  # utf-8-sig strips BOM
+        content = f.read()
+
+    for line in content.splitlines():
+        if "requires-python" in line:
+            print(f"  Found line: {repr(line)}")  # repr shows hidden chars
+            match = re.search(r"(\d+\.\d+(?:\.\d+)?)", line)
+            if match:
+                version = match.group()
+                if version.count(".") == 1:
+                    version += ".0"
+                return version
 
     print("Could not detect required Python version from pyproject.toml")
     sys.exit(1)
