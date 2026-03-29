@@ -66,10 +66,25 @@ def install_uv():
         sys.exit(1)
 
 
+def python_version(uv_path):
+    """Let uv install the exact Python version required by pyproject.toml."""
+    print("Installing required Python version via uv...")
+    try:
+        env = os.environ.copy()
+        env["PATH"] = os.path.expanduser("~/.local/bin") + ":" + env.get("PATH", "")
+        subprocess.check_call([uv_path, "python", "install"], env=env)
+        print("Python version installed successfully")
+    except subprocess.CalledProcessError:
+        print("Failed to install Python version")
+        sys.exit(1)
+
+
 def sync_project(uv_path):
     if not os.path.exists("pyproject.toml"):
         print("No pyproject.toml found")
         sys.exit(1)
+
+    python_version(uv_path)
 
     print("Running uv sync...")
     try:
