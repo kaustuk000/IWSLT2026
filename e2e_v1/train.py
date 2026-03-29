@@ -68,9 +68,24 @@ def forward_pass(batch, mms, qformer, llm, prompt_embeds_1, device):
     label_embeds  = embed_fn(safe_labels).to(torch.bfloat16)
 
     inputs_embeds = torch.cat([prompt_embeds, speech_embeds, label_embeds], dim=1)
-    ignore        = torch.full((B, prompt_embeds.size(1) + speech_embeds.size(1)),
-                               -100, dtype=torch.long, device=device)
-    full_labels   = torch.cat([ignore, labels], dim=1)
+    
+    ignore = torch.full(
+        (B, prompt_embeds.size(1) + speech_embeds.size(1)),
+        -100, dtype=torch.long, device=device
+    )
+    full_labels = torch.cat([ignore, labels], dim=1)
+    
+    prompt_mask = torch.ones((B, prompt_embeds.size(1)), device=device)
+    speech_mask = torch.ones((B, speech_embeds.size(1)), device=device)
+    label_mask  = (labels != -100).long()
+    
+    full_mask = torch.cat([prompt_mask, speech_mask, label_mask], dim=1)
+    
+    return llm(
+        inputs_embeds=inputs_embeds,
+        attention_mask=full_mask,
+        labels=full_labels
+    ).loss
 
     return llm(inputs_embeds=inputs_embeds, labels=full_labels).loss
 
