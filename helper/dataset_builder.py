@@ -16,7 +16,7 @@ class MTDatasetBuilder:
         "_flag_true_duplicate": "true_duplicate",
     }
 
-    def __init__(self, df: pd.DataFrame, out_dir: str = "data/MT_data"):
+    def __init__(self, df: pd.DataFrame, out_dir: str = "IWSLT2026\data\MT_data"):
         self.df = df.copy()
         self.out_dir = out_dir
 
@@ -127,7 +127,7 @@ class SplitSaver:
 
 if __name__ == "__main__":
     OUT_DIR = "data/MT_data"
-    raw_df = pd.read_csv("data\\MT_data\\raw_hin_bho.csv")   
+    raw_df = pd.read_csv("data/MT_data/raw_hin_bho.csv")   
 
     built_df = MTDatasetBuilder(raw_df, out_dir=OUT_DIR).build()
     SplitSaver(built_df, out_dir=OUT_DIR).save()
