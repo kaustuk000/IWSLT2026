@@ -5,8 +5,8 @@ import torch
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from peft import LoraConfig, get_peft_model, TaskType
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from peft import LoraConfig, get_peft_model, TaskType, prepare_model_for_kbit_training
 from sacrebleu.metrics import BLEU
 
 from data  import BhoHinDataset, make_collate_fn
@@ -18,18 +18,18 @@ TRANSLATE_PROMPT = "<|user|>\nनीचे दी गई सामग्री �
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--data_dir",     default="iwslt2026_bho-hi/iwslt2024-2025_bho-hi")
-    p.add_argument("--save_dir",     default="checkpoints")
-    p.add_argument("--hf_token",     required=True)
-    p.add_argument("--epochs",       type=int,   default=10)
-    p.add_argument("--batch_size",   type=int,   default=4)
-    p.add_argument("--grad_accum",   type=int,   default=4)
-    p.add_argument("--lr",           type=float, default=1e-4)
-    p.add_argument("--max_label_len",type=int,   default=128)
-    p.add_argument("--num_queries",  type=int,   default=80)
-    p.add_argument("--log_every",    type=int,   default=100)
-    p.add_argument("--bleu_batches", type=int,   default=50)
-    p.add_argument("--resume",       default=None)
+    p.add_argument("--data_dir",      default="iwslt2026_bho-hi/iwslt2024-2025_bho-hi")
+    p.add_argument("--save_dir",      default="checkpoints")
+    p.add_argument("--hf_token",      required=True)
+    p.add_argument("--epochs",        type=int,   default=10)
+    p.add_argument("--batch_size",    type=int,   default=4)
+    p.add_argument("--grad_accum",    type=int,   default=4)
+    p.add_argument("--lr",            type=float, default=1e-4)
+    p.add_argument("--max_label_len", type=int,   default=128)
+    p.add_argument("--num_queries",   type=int,   default=80)
+    p.add_argument("--log_every",     type=int,   default=100)
+    p.add_argument("--bleu_batches",  type=int,   default=50)
+    p.add_argument("--resume",        default=None)
     return p.parse_args()
 
 
@@ -68,26 +68,17 @@ def forward_pass(batch, mms, qformer, llm, prompt_embeds_1, device):
     label_embeds  = embed_fn(safe_labels).to(torch.bfloat16)
 
     inputs_embeds = torch.cat([prompt_embeds, speech_embeds, label_embeds], dim=1)
-    
-    ignore = torch.full(
-        (B, prompt_embeds.size(1) + speech_embeds.size(1)),
-        -100, dtype=torch.long, device=device
-    )
+
+    ignore      = torch.full((B, prompt_embeds.size(1) + speech_embeds.size(1)),
+                             -100, dtype=torch.long, device=device)
     full_labels = torch.cat([ignore, labels], dim=1)
-    
+
     prompt_mask = torch.ones((B, prompt_embeds.size(1)), device=device)
     speech_mask = torch.ones((B, speech_embeds.size(1)), device=device)
     label_mask  = (labels != -100).long()
-    
-    full_mask = torch.cat([prompt_mask, speech_mask, label_mask], dim=1)
-    
-    return llm(
-        inputs_embeds=inputs_embeds,
-        attention_mask=full_mask,
-        labels=full_labels
-    ).loss
+    full_mask   = torch.cat([prompt_mask, speech_mask, label_mask], dim=1)
 
-    return llm(inputs_embeds=inputs_embeds, labels=full_labels).loss
+    return llm(inputs_embeds=inputs_embeds, attention_mask=full_mask, labels=full_labels).loss
 
 
 def evaluate_bleu(dev_loader, mms, qformer, llm, tokenizer, prompt_embeds_1, device, num_batches=50):
@@ -138,15 +129,20 @@ def main():
     print("Loading MMS encoder...")
     mms = MMSEncoder().to(device)
 
-    print("Loading Airavata...")
+    print("Loading Airavata in 8-bit...")
+    bnb_config = BitsAndBytesConfig(
+        load_in_8bit=True,
+        llm_int8_threshold=6.0,
+        llm_int8_has_fp16_weight=False,
+    )
     llm = AutoModelForCausalLM.from_pretrained(
         "ai4bharat/Airavata",
         token=args.hf_token,
-        torch_dtype=torch.bfloat16,
+        quantization_config=bnb_config,
         device_map="auto",
     )
-    for p in llm.parameters():
-        p.requires_grad = False
+    # required before adding LoRA to a quantized model
+    llm = prepare_model_for_kbit_training(llm, use_gradient_checkpointing=True)
     llm = get_peft_model(llm, LoraConfig(
         task_type=TaskType.CAUSAL_LM, r=16, lora_alpha=32,
         lora_dropout=0.05, target_modules=["q_proj", "v_proj"], bias="none",
@@ -230,12 +226,12 @@ def main():
         if bleu > best_bleu:
             best_bleu = bleu
             torch.save({
-                "epoch":   epoch,
-                "qformer": qformer.state_dict(),
-                "lora":    {k: v for k, v in llm.state_dict().items() if "lora" in k},
+                "epoch":     epoch,
+                "qformer":   qformer.state_dict(),
+                "lora":      {k: v for k, v in llm.state_dict().items() if "lora" in k},
                 "optimizer": optimizer.state_dict(),
-                "val_loss": avg_val_loss,
-                "bleu":    best_bleu,
+                "val_loss":  avg_val_loss,
+                "bleu":      best_bleu,
             }, f"{args.save_dir}/best_checkpoint.pt")
             print(f"  → Saved best (BLEU={best_bleu:.2f})\n")
         else:
