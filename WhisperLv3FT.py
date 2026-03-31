@@ -74,9 +74,9 @@ SPLIT_SYNTHETIC = "train_synthetic"
 SPLIT_BENCHMARK = "benchmark"
 
 REAL_SAMPLES      = 400   
-SYNTHETIC_SAMPLES = 1600   
-TEST_SIZE         = 200    
-VAL_SIZE          = 200   
+SYNTHETIC_SAMPLES = 10000   
+TEST_SIZE         = 2000    
+VAL_SIZE          = 2000   
 TRAIN_SIZE        = REAL_SAMPLES + SYNTHETIC_SAMPLES
  
 print(f"Train : {TRAIN_SIZE}")
@@ -309,7 +309,7 @@ def transcribe_single(sample: dict) -> Tuple[str, str]:
             attention_mask=attention_mask,
             task="transcribe",
             language="hi",
-            num_beams=2,    
+            num_beams=5,    
         )
 
     pred = processor.batch_decode(pred_ids, skip_special_tokens=True)[0]
@@ -317,7 +317,7 @@ def transcribe_single(sample: dict) -> Tuple[str, str]:
     return normalize_text(pred), normalize_text(ref)
 
 
-BASELINE_SAMPLES = 5 
+BASELINE_SAMPLES = 100 
 baseline_preds, baseline_refs = [], []
 
 for s in tqdm(val_samples[:BASELINE_SAMPLES], desc="Baseline eval"):
@@ -582,7 +582,7 @@ training_args = Seq2SeqTrainingArguments(
     gradient_checkpointing=True,
     dataloader_pin_memory=False,
     
-    learning_rate=3e-6,
+    learning_rate=3e-4,
     lr_scheduler_type="cosine",        
     warmup_ratio=0.06,                  
  
