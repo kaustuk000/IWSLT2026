@@ -2,7 +2,11 @@ import os
 import re
 import numpy as np
 import pandas as pd
-from preprocessor import preprocess
+
+try:
+    from helper.preprocessor import preprocess
+except ImportError:
+    from preprocessor import preprocess
 
 
 class MTDatasetBuilder:
@@ -16,7 +20,7 @@ class MTDatasetBuilder:
         "_flag_true_duplicate": "true_duplicate",
     }
 
-    def __init__(self, df: pd.DataFrame, out_dir: str = "IWSLT2026\data\MT_data"):
+    def __init__(self, df: pd.DataFrame, out_dir: str = "data/MT_data"):
         self.df = df.copy()
         self.out_dir = out_dir
 

@@ -16,6 +16,7 @@ from transformers import AutoModelForSeq2SeqLM
 from transformers.optimization import Adafactor
 from transformers import get_constant_schedule_with_warmup
 from functools import partial
+from sacrebleu.metrics import BLEU, CHRF
 import multiprocess.resource_tracker as _rt
 
 # ── Silence noisy warnings ────────────────────────────────────────────────
@@ -60,6 +61,7 @@ def parse_args():
     parser.add_argument("--clip_threshold",    type=float, default=1.0,   help="Adafactor clip threshold")
     parser.add_argument("--warmup_steps",      type=int,   default=500)
     parser.add_argument("--checkpoint_every",  type=int,   default=1000,  help="Save a checkpoint every N global steps")
+    parser.add_argument("--eval_max_batches",  type=int,   default=0,     help="Limit generation-based dev evaluation to N batches; 0 uses the full dev set")
 
     # ── Output naming ────────────────────────────────────────────────────
     parser.add_argument("--run_name",      type=str,   default="model-mt-v1",
@@ -99,7 +101,19 @@ def get_device(model):
 def unwrap(model):
     return model.module if isinstance(model, torch.nn.DataParallel) else model
 
-def save_model(path, model, tokenizer, global_step, epoch, optimizer, scheduler, scaler, loss_log):
+def save_model(
+    path,
+    model,
+    tokenizer,
+    global_step,
+    epoch,
+    optimizer,
+    scheduler,
+    scaler,
+    loss_log,
+    best_bleu=None,
+    best_chrf=None,
+):
     """Save model weights + tokenizer + full resume state."""
     os.makedirs(path, exist_ok=True)
     unwrap(model).save_pretrained(path)
@@ -116,10 +130,22 @@ def save_model(path, model, tokenizer, global_step, epoch, optimizer, scheduler,
         "epoch":       epoch,
         "loss_log":    loss_log,
     }
+    if best_bleu is not None:
+        state["best_bleu"] = best_bleu
+    if best_chrf is not None:
+        state["best_chrf"] = best_chrf
     with open(os.path.join(path, "resume_state.json"), "w") as f:
         json.dump(state, f, indent=2)
 
     print(f"Saved → {path}  (step {global_step}, epoch {epoch})")
+
+def flush_step_losses(path, step_loss_buffer):
+    if not step_loss_buffer:
+        return
+    with open(path, "a") as f:
+        for step, loss_val in step_loss_buffer:
+            f.write(f"{step},{loss_val:.6f}\n")
+    step_loss_buffer.clear()
 
 # ── Tokenize function ─────────────────────────────────────────────────────
 
@@ -140,6 +166,35 @@ def tokenize(batch, tokenizer, max_length, src_lang, tgt_lang):
         "attention_mask": enc["attention_mask"],
         "labels":         labels,
     }
+
+def evaluate_generation_metrics(model, tokenizer, dev_loader, tgt_lang, device, max_new_tokens, max_batches=0):
+    bleu_metric = BLEU()
+    chrf_metric = CHRF()
+    hypotheses = []
+    references = []
+    generator = unwrap(model)
+    forced_bos_token_id = tokenizer.lang_code_to_id[tgt_lang]
+
+    for batch_idx, batch in enumerate(tqdm(dev_loader, desc="Generation eval", leave=False)):
+        if max_batches and batch_idx >= max_batches:
+            break
+        input_ids = batch["input_ids"].to(device)
+        attention_mask = batch["attention_mask"].to(device)
+        generated = generator.generate(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            forced_bos_token_id=forced_bos_token_id,
+            max_new_tokens=max_new_tokens,
+            num_beams=1,
+        )
+        safe_labels = batch["labels"].clone()
+        safe_labels[safe_labels == -100] = tokenizer.pad_token_id
+        hypotheses.extend(tokenizer.batch_decode(generated, skip_special_tokens=True))
+        references.extend(tokenizer.batch_decode(safe_labels, skip_special_tokens=True))
+
+    bleu = bleu_metric.corpus_score(hypotheses, [references]).score if hypotheses else 0.0
+    chrf = chrf_metric.corpus_score(hypotheses, [references]).score if hypotheses else 0.0
+    return bleu, chrf
 
 # ── Main ──────────────────────────────────────────────────────────────────
 
@@ -169,6 +224,7 @@ def main():
 
     print(f"Device : {DEVICE}")
     CUDA = torch.cuda.is_available()
+    num_workers = min(4, os.cpu_count() or 1)
 
     # ── Decide where to load model weights from ───────────────────────────
     # If resuming, load from checkpoint dir; else from HF hub / local path.
@@ -211,17 +267,18 @@ def main():
         train_ds,
         batch_size=args.batch_size,
         shuffle=True,
-        num_workers=0,
+        num_workers=num_workers,
         pin_memory=CUDA,
-        drop_last=True,
+        persistent_workers=num_workers > 0,
         collate_fn=collator,
     )
     dev_loader = DataLoader(
         dev_ds,
         batch_size=args.batch_size,
         shuffle=False,
-        num_workers=0,
+        num_workers=num_workers,
         pin_memory=CUDA,
+        persistent_workers=num_workers > 0,
         collate_fn=collator,
     )
 
@@ -259,6 +316,8 @@ def main():
     start_epoch    = 1
     loss_log       = []
     all_train_losses = []
+    best_bleu = float("-inf")
+    best_chrf = float("-inf")
 
     if args.resume:
         state_file = os.path.join(args.resume, "resume_state.json")
@@ -274,6 +333,8 @@ def main():
         # Resume from the epoch AFTER the last completed one
         start_epoch = state["epoch"] + 1
         loss_log    = state.get("loss_log", [])
+        best_bleu   = state.get("best_bleu", float("-inf"))
+        best_chrf   = state.get("best_chrf", float("-inf"))
 
         # Restore optimizer / scheduler / scaler
         opt_path  = os.path.join(args.resume, "optimizer.pt")
@@ -316,6 +377,8 @@ def main():
     for epoch in range(start_epoch, args.epochs + 1):
         model.train()
         epoch_losses = []
+        step_loss_buffer = []
+        optimizer.zero_grad(set_to_none=True)
 
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{args.epochs} [train]", leave=True)
         for batch in pbar:
@@ -344,22 +407,28 @@ def main():
                 global_step += 1
 
                 pbar.set_postfix({"loss": f"{np.mean(epoch_losses[-100:]):.4f}"})
+                step_loss_buffer.append((global_step, loss_val))
 
-                with open(STEP_LOSS_PATH, "a") as f:
-                    f.write(f"{global_step},{loss_val:.6f}\n")
+                if len(step_loss_buffer) >= 100:
+                    flush_step_losses(STEP_LOSS_PATH, step_loss_buffer)
 
                 if global_step % args.checkpoint_every == 0:
+                    flush_step_losses(STEP_LOSS_PATH, step_loss_buffer)
                     ckpt_path = os.path.join(CHECKPOINT_PATH, f"step_{global_step:07d}")
                     save_model(
                         ckpt_path, model, tokenizer,
-                        global_step, epoch, optimizer, scheduler, scaler, loss_log,
+                        global_step, epoch, optimizer, scheduler, scaler, loss_log, best_bleu, best_chrf,
                     )
 
             except RuntimeError as e:
+                if "out of memory" not in str(e).lower():
+                    raise
                 optimizer.zero_grad(set_to_none=True)
                 cleanup()
                 print(f"  [step {global_step}] RuntimeError: {e}")
                 continue
+
+        flush_step_losses(STEP_LOSS_PATH, step_loss_buffer)
 
         # ── Validation ────────────────────────────────────────────────────
         model.eval()
@@ -380,12 +449,24 @@ def main():
 
         train_loss_epoch = np.mean(epoch_losses)
         val_loss_epoch   = np.mean(val_losses)
+        bleu, chrf = evaluate_generation_metrics(
+            model=unwrap(model),
+            tokenizer=tokenizer,
+            dev_loader=dev_loader,
+            tgt_lang=args.tgt_lang,
+            device=get_device(model),
+            max_new_tokens=args.max_length,
+            max_batches=args.eval_max_batches,
+        )
         print(f"\nEpoch {epoch:02d} | train_loss={train_loss_epoch:.4f}  val_loss={val_loss_epoch:.4f}")
+        print(f"Epoch {epoch:02d} | BLEU={bleu:.2f}  chrF={chrf:.2f}")
 
         loss_log.append({
             "epoch":      epoch,
             "train_loss": round(float(train_loss_epoch), 6),
             "val_loss":   round(float(val_loss_epoch),   6),
+            "bleu":       round(float(bleu), 4),
+            "chrf":       round(float(chrf), 4),
             "steps":      global_step,
         })
         with open(LOSS_LOG_PATH, "w") as f:
@@ -395,8 +476,18 @@ def main():
         epoch_save_path = f"{MODEL_BASE_PATH}_epoch{epoch}"
         save_model(
             epoch_save_path, model, tokenizer,
-            global_step, epoch, optimizer, scheduler, scaler, loss_log,
+            global_step, epoch, optimizer, scheduler, scaler, loss_log, best_bleu, best_chrf,
         )
+
+        if bleu > best_bleu:
+            best_bleu = bleu
+            best_chrf = chrf
+            best_path = f"{MODEL_BASE_PATH}_best"
+            save_model(
+                best_path, model, tokenizer,
+                global_step, epoch, optimizer, scheduler, scaler, loss_log, best_bleu, best_chrf,
+            )
+            print(f"Best checkpoint updated → {best_path}")
 
         cleanup()
 
