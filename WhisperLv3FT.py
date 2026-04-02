@@ -7,13 +7,18 @@ os.environ["PYTORCH_ALLOC_CONF"]   = "expandable_segments:True"
 
 import torch
 
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 if torch.cuda.device_count() > 1:
     torch.nn.DataParallel = lambda model, **kwargs: model
     print(f"DataParallel disabled — was seeing {torch.cuda.device_count()} GPUs")
 
 print(f"Visible GPUs : {torch.cuda.device_count()}")
-print(f"Active GPU   : {torch.cuda.get_device_name(0)}")
-print(f"VRAM         : {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
+if torch.cuda.is_available():
+    print(f"Active GPU   : {torch.cuda.get_device_name(0)}")
+    print(f"VRAM         : {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
+else:
+    print("Active device: CPU")
  
  
 print("done")
@@ -45,16 +50,22 @@ import matplotlib.pyplot as plt
 from torch.utils.data import Dataset
 from peft import LoraConfig, get_peft_model
 import librosa
+import torchaudio
 from jiwer import wer, cer, process_words
 from IPython.display import Audio, display
 import warnings
 warnings.filterwarnings("ignore")
+
+if torch.cuda.is_available():
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
  
 print("Imports ✓")
 print(f"Torch  : {torch.__version__}")
 print(f"CUDA   : {torch.cuda.is_available()}")
 if torch.cuda.is_available():
     print(f"GPU    : {torch.cuda.get_device_name(0)}")
+print(f"Device : {DEVICE}")
  
  
 # ============================================================
@@ -64,10 +75,13 @@ MODEL_NAME    = "openai/whisper-large-v3"
 DATASET_NAME  = "ai4bharat/Rural_Women_Bhojpuri"
 SAMPLE_RATE   = 16000
 MAX_AUDIO_SEC = 30
-SEEDS         = [42, 1337, 2024]          
-OUTPUT_DIR    = "/kaggle/working/whisper-bhojpuri"
-SAVE_PATH     = "/kaggle/working/whisper-bhojpuri-final"
-LM_ARPA_PATH  = "/kaggle/working/bhojpuri_lm.arpa" 
+SEEDS         = [42, 1337, 2024]
+WORK_DIR      = os.environ.get("WORK_DIR", os.getcwd())
+OUTPUT_DIR    = os.path.join(WORK_DIR, "whisper-bhojpuri")
+SAVE_PATH     = os.path.join(WORK_DIR, "whisper-bhojpuri-final")
+LM_ARPA_PATH  = os.path.join(WORK_DIR, "bhojpuri_lm.arpa")
+RESULTS_TABLE_PATH = os.path.join(WORK_DIR, "results_table.csv")
+EPOCH_SUMMARY_PATH = os.path.join(WORK_DIR, "epoch_summary.csv")
  
 SPLIT_REAL      = "train_real"
 SPLIT_SYNTHETIC = "train_synthetic"
@@ -78,10 +92,20 @@ SYNTHETIC_SAMPLES = 10000
 TEST_SIZE         = 2000    
 VAL_SIZE          = 2000   
 TRAIN_SIZE        = REAL_SAMPLES + SYNTHETIC_SAMPLES
+
+USE_BF16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+USE_FP16 = torch.cuda.is_available() and not USE_BF16
+MODEL_DTYPE = torch.bfloat16 if USE_BF16 else torch.float16 if USE_FP16 else torch.float32
+BASELINE_NUM_BEAMS = 2
+EVAL_NUM_BEAMS = 2
+DATA_LOADER_WORKERS = min(4, os.cpu_count() or 1)
  
 print(f"Train : {TRAIN_SIZE}")
 print(f"Val   : {VAL_SIZE}")
 print(f"Test  : {TEST_SIZE}  ← only touched ONCE at the very end")
+print(f"Work dir    : {WORK_DIR}")
+print(f"Model dtype : {MODEL_DTYPE}")
+print(f"Workers     : {DATA_LOADER_WORKERS}")
  
 
 # ============================================================
@@ -165,7 +189,11 @@ def load_audio(sample: dict) -> np.ndarray:
     array = np.array(sample["audio"]["array"], dtype=np.float32)
     src_sr = sample["audio"]["sampling_rate"]
     if src_sr != SAMPLE_RATE:
-        array = librosa.resample(array, orig_sr=src_sr, target_sr=SAMPLE_RATE)
+        array = torchaudio.functional.resample(
+            torch.from_numpy(array),
+            orig_freq=src_sr,
+            new_freq=SAMPLE_RATE,
+        ).numpy()
     return array[:SAMPLE_RATE * MAX_AUDIO_SEC]
  
 print("Audio loader ✓")
@@ -281,6 +309,7 @@ model.config.use_cache = False
 forced_decoder_ids = processor.get_decoder_prompt_ids(language="hi", task="transcribe")
 model.config.forced_decoder_ids            = forced_decoder_ids
 model.generation_config.forced_decoder_ids = forced_decoder_ids
+model = model.to(device=DEVICE, dtype=MODEL_DTYPE)
 print("Model loaded ✓")
  
 # ============================================================
@@ -290,7 +319,7 @@ print("Model loaded ✓")
 
 print("\nComputing zero-shot baseline on val set…")
 model.eval()
-model = model.to(torch.float32)
+model = model.to(device=DEVICE, dtype=MODEL_DTYPE)
 
 def transcribe_single(sample: dict) -> Tuple[str, str]:
     array = load_audio(sample)
@@ -300,16 +329,16 @@ def transcribe_single(sample: dict) -> Tuple[str, str]:
         return_tensors="pt",
         return_attention_mask=True
     )
-    input_features = inputs.input_features.to(model.device).to(model.dtype)
-    attention_mask = inputs.attention_mask.to(model.device)
+    input_features = inputs.input_features.to(device=DEVICE, dtype=MODEL_DTYPE)
+    attention_mask = inputs.attention_mask.to(DEVICE)
 
-    with torch.no_grad():
+    with torch.inference_mode():
         pred_ids = model.generate(
             input_features,
             attention_mask=attention_mask,
             task="transcribe",
             language="hi",
-            num_beams=5,    
+            num_beams=BASELINE_NUM_BEAMS,
         )
 
     pred = processor.batch_decode(pred_ids, skip_special_tokens=True)[0]
@@ -340,7 +369,7 @@ pd.DataFrame([{
     "WER": round(baseline_wer*100, 2),
     "CER": round(baseline_cer*100, 2),
     "Train Samples": 0
-}]).to_csv("/kaggle/working/results_table.csv", index=False)
+}]).to_csv(RESULTS_TABLE_PATH, index=False)
 
 
 # ============================================================
@@ -356,8 +385,8 @@ lora_config = LoraConfig(
 model = get_peft_model(model, lora_config)
 model.print_trainable_parameters()
  
-model = model.to(torch.float32)
-print("Model cast to float32 ✓")
+model = model.to(device=DEVICE, dtype=MODEL_DTYPE)
+print(f"Model cast to {MODEL_DTYPE} ✓")
 
 model.enable_input_require_grads()  
 model.gradient_checkpointing_enable()
@@ -376,9 +405,18 @@ class BhojpuriDataset(Dataset):
     def __init__(self, samples: list, augment: bool = False):
         self.samples = samples
         self.augment = augment
+        self.cache_processed = not augment
+        self._cache = {}
     def __len__(self):
         return len(self.samples)
     def __getitem__(self, idx):
+        if self.cache_processed and idx in self._cache:
+            cached = self._cache[idx]
+            return {
+                "input_features": cached["input_features"].clone(),
+                "attention_mask": cached["attention_mask"].clone(),
+                "labels": cached["labels"][:],
+            }
         sample = self.samples[idx]
         array  = load_audio(sample)
         if self.augment:
@@ -396,11 +434,18 @@ class BhojpuriDataset(Dataset):
             normalize_text(sample["text"]),
             return_tensors="pt"
         ).input_ids
-        return {
+        item = {
             "input_features": features,
             "attention_mask": inputs.attention_mask[0],
             "labels":         labels[0].tolist()
         }
+        if self.cache_processed:
+            self._cache[idx] = {
+                "input_features": item["input_features"].clone(),
+                "attention_mask": item["attention_mask"].clone(),
+                "labels": item["labels"][:],
+            }
+        return item
 train_dataset = BhojpuriDataset(train_samples, augment=True)
 val_dataset   = BhojpuriDataset(val_samples,   augment=False)
 print(f"Train : {len(train_dataset)} ✓  (lazy — no RAM spike)")
@@ -460,7 +505,7 @@ class DataCollatorSpeechSeq2SeqWithPadding:
         # ── input features ──────────────────────────────────────
         input_features = [{"input_features": f["input_features"]} for f in features]
         batch = self.processor.feature_extractor.pad(input_features, return_tensors="pt")
-        batch["input_features"] = batch["input_features"].to(torch.float32)
+        batch["input_features"] = batch["input_features"].to(MODEL_DTYPE)
 
         # ── labels ──────────────────────────────────────────────
         label_features = [{"input_ids": f["labels"]} for f in features]
@@ -496,7 +541,9 @@ print("Data collator ✓")
 # ============================================================
 def compute_metrics(pred):
     pred_ids  = pred.predictions
-    label_ids = pred.label_ids
+    if isinstance(pred_ids, tuple):
+        pred_ids = pred_ids[0]
+    label_ids = pred.label_ids.copy()
     label_ids[label_ids == -100] = processor.tokenizer.pad_token_id
  
     pred_strs  = [normalize_text(p) for p in
@@ -563,7 +610,7 @@ class EpochSummaryCallback(TrainerCallback):
         print(f"\n  ✓ Best Epoch : {int(best['Epoch'])}  "
               f"WER: {best['WER (%)']}%  CER: {best['CER (%)']}%")
         print("="*65)
-        df.to_csv("/kaggle/working/epoch_summary.csv", index=False)
+        df.to_csv(EPOCH_SUMMARY_PATH, index=False)
  
 epoch_callback = EpochSummaryCallback()
 print("Callback ✓")
@@ -580,7 +627,9 @@ training_args = Seq2SeqTrainingArguments(
     per_device_eval_batch_size=2,
     gradient_accumulation_steps=16,
     gradient_checkpointing=True,
-    dataloader_pin_memory=False,
+    dataloader_num_workers=DATA_LOADER_WORKERS,
+    dataloader_pin_memory=torch.cuda.is_available(),
+    dataloader_persistent_workers=DATA_LOADER_WORKERS > 0,
     
     learning_rate=3e-4,
     lr_scheduler_type="cosine",        
@@ -589,12 +638,14 @@ training_args = Seq2SeqTrainingArguments(
     num_train_epochs=4,
     label_smoothing_factor=0.1,         
  
-    fp16=True,
-    fp16_full_eval=False,
+    fp16=USE_FP16,
+    bf16=USE_BF16,
+    fp16_full_eval=USE_FP16,
+    bf16_full_eval=USE_BF16,
  
     predict_with_generate=True,
     generation_max_length=225,
-    generation_num_beams=10,          
+    generation_num_beams=EVAL_NUM_BEAMS,
  
     eval_strategy="epoch",
     save_strategy="epoch",
