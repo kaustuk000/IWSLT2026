@@ -1,13 +1,13 @@
 #!/bin/bash
 #PBS -q gpu@pbs-m1.metacentrum.cz
 #PBS -N train-e2e
-#PBS -l select=1:cluster=bee*|zia*:ncpus=4:ngpus=1:mem=64000mb:gpu_mem=40000mb:scratch_local=100gb
+#PBS -l select=1:ncpus=4:ngpus=1:mem=64000mb:gpu_mem=40000mb:scratch_local=100gb
 #PBS -l walltime=48:00:00
 
-PROJECT_DIR="${PROJECT_DIR:-$HOME/IWSLT2026-e2e}"
+PROJECT_DIR="/auto/plzen1/home/kumar/IWSLT2026-e2e"
 LOG_DIR="$PROJECT_DIR/logs"
 mkdir -p "$LOG_DIR"
-export PATH="$HOME/.local/bin:$PATH"
+export PATH="/storage/brno2/home/kumar/.local/bin:$PATH"
 export HF_TOKEN="hf_dummy_token"
 
 echo "$PBS_JOBID running on $(hostname -f), scratch: $SCRATCHDIR" >> "$PROJECT_DIR/jobs_info.txt"
@@ -24,7 +24,7 @@ rsync -a \
 
 cd "$SCRATCHDIR" || exit 1
 
-export HF_HOME="${HF_HOME:-$SCRATCHDIR/.cache/huggingface}"
+export HF_HOME="$SCRATCHDIR/.cache/huggingface"
 export TRANSFORMERS_CACHE="$HF_HOME"
 export HF_DATASETS_CACHE="$HF_HOME/datasets"
 
