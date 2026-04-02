@@ -4,10 +4,10 @@
 #PBS -l select=1:ncpus=4:ngpus=1:mem=48000mb:gpu_mem=24000mb:scratch_local=100gb
 #PBS -l walltime=48:00:00
 
-PROJECT_DIR="${PROJECT_DIR:-$HOME/IWSLT2026-mt}"
+PROJECT_DIR="/auto/plzen1/home/kumar/IWSLT2026-mt"
 LOG_DIR="$PROJECT_DIR/logs"
 mkdir -p "$LOG_DIR"
-export PATH="$HOME/.local/bin:$PATH"
+export PATH="/storage/brno2/home/kumar/.local/bin:$PATH"
 
 echo "$PBS_JOBID running on $(hostname -f), scratch: $SCRATCHDIR" >> "$PROJECT_DIR/jobs_info.txt"
 
@@ -22,7 +22,7 @@ rsync -a \
 
 cd "$SCRATCHDIR" || exit 1
 
-export HF_HOME="${HF_HOME:-$SCRATCHDIR/.cache/huggingface}"
+export HF_HOME="$SCRATCHDIR/.cache/huggingface"
 export TRANSFORMERS_CACHE="$HF_HOME"
 export HF_DATASETS_CACHE="$HF_HOME/datasets"
 
