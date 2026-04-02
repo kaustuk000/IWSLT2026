@@ -28,7 +28,7 @@ print("done")
 # ============================================================
 # CELL 2 — Imports
 # ============================================================
-import os, gc, math, json, itertools, subprocess, tempfile
+import os, gc, math, json, itertools, subprocess, tempfile, io
 import torch
 import re
 import random
@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 from scipy.stats import t as t_dist      
 from tqdm.auto import tqdm
-from datasets import load_dataset
+from datasets import load_dataset, Audio as HfAudio
 from transformers import (
     WhisperProcessor,
     WhisperForConditionalGeneration,
@@ -51,6 +51,7 @@ from torch.utils.data import Dataset
 from peft import LoraConfig, get_peft_model
 import librosa
 import torchaudio
+import soundfile as sf
 from jiwer import wer, cer, process_words
 from IPython.display import Audio, display
 import warnings
@@ -120,21 +121,25 @@ def set_seed(seed: int):
 set_seed(SEEDS[0])
 print(f"Seed set to {SEEDS[0]} ✓")
  
- # ============================================================
+# ============================================================
 # CELL 5 — Load + Split Dataset
 # ============================================================
+def load_streaming_split(split_name: str):
+    ds = load_dataset(DATASET_NAME, split=split_name, streaming=True)
+    return ds.cast_column("audio", HfAudio(decode=False))
+
 print("Loading train_real…")
-ds_real = load_dataset(DATASET_NAME, split=SPLIT_REAL, streaming=True)
+ds_real = load_streaming_split(SPLIT_REAL)
 real_samples = list(ds_real)   # take all (~400)
 print(f"  train_real      : {len(real_samples)} samples")
 
 print("Loading train_synthetic…")
-ds_syn = load_dataset(DATASET_NAME, split=SPLIT_SYNTHETIC, streaming=True)
+ds_syn = load_streaming_split(SPLIT_SYNTHETIC)
 syn_samples = list(ds_syn.take(SYNTHETIC_SAMPLES))
 print(f"  train_synthetic : {len(syn_samples)} samples (subset)")
 
 print("Loading benchmark…")
-ds_bench = load_dataset(DATASET_NAME, split=SPLIT_BENCHMARK, streaming=True)
+ds_bench = load_streaming_split(SPLIT_BENCHMARK)
 bench_samples = list(ds_bench)
 print(f"  benchmark       : {len(bench_samples)} samples")
 
@@ -185,9 +190,28 @@ print("Normalization check:", normalize_text("हेलो, World! ३४५"))
 # ============================================================
 # CELL 7 — Audio Loading
 # ============================================================
+def _decode_audio_blob(audio_blob: dict) -> Tuple[np.ndarray, int]:
+    if "array" in audio_blob and audio_blob["array"] is not None:
+        return np.asarray(audio_blob["array"], dtype=np.float32), int(audio_blob["sampling_rate"])
+
+    audio_bytes = audio_blob.get("bytes")
+    audio_path = audio_blob.get("path")
+
+    if audio_bytes is not None:
+        array, src_sr = sf.read(io.BytesIO(audio_bytes), dtype="float32", always_2d=False)
+    elif audio_path:
+        array, src_sr = sf.read(audio_path, dtype="float32", always_2d=False)
+    else:
+        raise ValueError("Audio sample is missing both decoded data and raw storage fields.")
+
+    array = np.asarray(array, dtype=np.float32)
+    if array.ndim == 2:
+        array = array.mean(axis=1)
+    return array, int(src_sr)
+
+
 def load_audio(sample: dict) -> np.ndarray:
-    array = np.array(sample["audio"]["array"], dtype=np.float32)
-    src_sr = sample["audio"]["sampling_rate"]
+    array, src_sr = _decode_audio_blob(sample["audio"])
     if src_sr != SAMPLE_RATE:
         array = torchaudio.functional.resample(
             torch.from_numpy(array),
