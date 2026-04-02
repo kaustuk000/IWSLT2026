@@ -1,7 +1,7 @@
 #!/bin/bash
 #PBS -q gpu@pbs-m1.metacentrum.cz
 #PBS -N train-e2e
-#PBS -l select=1:cluster=bee*|zia*:ncpus=4:ngpus=1:mem=64000mb:gpu_mem=40000mb:scratch_local=100gb
+#PBS -l select=1:ncpus=4:ngpus=1:mem=64000mb:gpu_mem=40000mb:scratch_local=100gb
 #PBS -l walltime=48:00:00
 
 PROJECT_DIR="${PROJECT_DIR:-$HOME/IWSLT2026-e2e}"
