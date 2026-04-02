@@ -22,7 +22,15 @@ class BhoHinDataset(Dataset):
 
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
-        waveform, sr = torchaudio.load(f"{self.base_path}/{self.split}/{row.wav_path}")
+        audio_path = f"{self.base_path}/{self.split}/{row.wav_path}"
+        info = torchaudio.info(audio_path)
+        frame_offset = max(0, int(round(float(row.start) * info.sample_rate)))
+        num_frames = max(1, int(round(float(row.duration) * info.sample_rate)))
+        waveform, sr = torchaudio.load(
+            audio_path,
+            frame_offset=frame_offset,
+            num_frames=num_frames,
+        )
         if waveform.shape[0] > 1:
             waveform = waveform.mean(dim=0, keepdim=True)
         return {"audio": waveform.squeeze(0), "sampling_rate": sr, "hindi": self.hindi[idx]}
@@ -30,10 +38,16 @@ class BhoHinDataset(Dataset):
 
 def make_collate_fn(processor, tokenizer, max_label_len=128):
     def collate_fn(batch):
-        audio_arrays = [b["audio"].numpy() for b in batch]
+        target_sr = processor.feature_extractor.sampling_rate
+        audio_arrays = []
+        for item in batch:
+            audio = item["audio"]
+            if item["sampling_rate"] != target_sr:
+                audio = torchaudio.functional.resample(audio, item["sampling_rate"], target_sr)
+            audio_arrays.append(audio.numpy())
         hindi_texts  = [b["hindi"] for b in batch]
         audio_inputs = processor(
-            audio_arrays, sampling_rate=16000,
+            audio_arrays, sampling_rate=target_sr,
             return_tensors="pt", padding=True,
         )
         label_enc = tokenizer(

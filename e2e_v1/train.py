@@ -122,6 +122,7 @@ def main():
     args = parse_args()
     clone_data(args.data_dir)
     os.makedirs(args.save_dir, exist_ok=True)
+    num_workers = min(4, os.cpu_count() or 1)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device} | GPUs: {torch.cuda.device_count()}")
@@ -161,9 +162,11 @@ def main():
 
     collate_fn   = make_collate_fn(mms.processor, tokenizer, args.max_label_len)
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
-                              collate_fn=collate_fn, num_workers=2, pin_memory=True)
+                              collate_fn=collate_fn, num_workers=num_workers,
+                              pin_memory=torch.cuda.is_available(), persistent_workers=num_workers > 0)
     dev_loader   = DataLoader(dev_ds,   batch_size=args.batch_size, shuffle=False,
-                              collate_fn=collate_fn, num_workers=2)
+                              collate_fn=collate_fn, num_workers=num_workers,
+                              pin_memory=torch.cuda.is_available(), persistent_workers=num_workers > 0)
 
     qformer = QFormer(num_queries=args.num_queries).to(device)
 
@@ -189,7 +192,7 @@ def main():
     for epoch in range(start_epoch, args.epochs):
         qformer.train()
         llm.train()
-        optimizer.zero_grad()
+        optimizer.zero_grad(set_to_none=True)
         total_train_loss = 0.0
 
         for step, batch in enumerate(train_loader):
@@ -200,11 +203,16 @@ def main():
             if (step + 1) % args.grad_accum == 0:
                 torch.nn.utils.clip_grad_norm_(trainable, max_norm=1.0)
                 optimizer.step()
-                optimizer.zero_grad()
+                optimizer.zero_grad(set_to_none=True)
 
             if step % args.log_every == 0:
                 avg = total_train_loss / (step + 1)
                 print(f"Epoch {epoch+1} | Step {step}/{len(train_loader)} | Loss {loss.item()*args.grad_accum:.4f} | Avg {avg:.4f}")
+
+        if len(train_loader) % args.grad_accum != 0:
+            torch.nn.utils.clip_grad_norm_(trainable, max_norm=1.0)
+            optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
 
         avg_train_loss = total_train_loss / len(train_loader)
 
