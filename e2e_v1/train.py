@@ -1,6 +1,7 @@
 import os
 import argparse
 import subprocess
+from pathlib import Path
 import torch
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
@@ -34,12 +35,22 @@ def parse_args():
 
 def clone_data(data_dir):
     repo = "https://github.com/shashwatup9k/iwslt2026_bho-hi.git"
-    root = data_dir.split("/")[0]
-    if not os.path.exists(root):
-        print(f"Cloning dataset from {repo}...")
-        subprocess.run(["git", "clone", repo], check=True)
-    else:
+    data_dir_path = Path(data_dir)
+    expected_manifest = data_dir_path / "train" / "stamped.tsv"
+    if expected_manifest.exists():
         print("Dataset already exists, skipping clone.")
+        return
+
+    if data_dir_path.is_absolute():
+        raise FileNotFoundError(f"Dataset not found at absolute path: {data_dir_path}")
+
+    repo_root = Path(data_dir_path.parts[0])
+    if not repo_root.exists():
+        print(f"Cloning dataset from {repo} into {repo_root}...")
+        subprocess.run(["git", "clone", repo, str(repo_root)], check=True)
+
+    if not expected_manifest.exists():
+        raise FileNotFoundError(f"Expected dataset files not found at: {expected_manifest}")
 
 
 def get_prompt_embeds_cached(tokenizer, llm, device):
@@ -122,6 +133,8 @@ def main():
     hf_token = os.environ.get("HF_TOKEN")
     if not hf_token:
         raise RuntimeError("HF_TOKEN is not set.")
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA GPU is required for this training script.")
     clone_data(args.data_dir)
     os.makedirs(args.save_dir, exist_ok=True)
     num_workers = 0

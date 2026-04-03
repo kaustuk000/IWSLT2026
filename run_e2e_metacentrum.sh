@@ -27,7 +27,7 @@ export HF_HOME="$SCRATCHDIR/.cache/huggingface"
 export TRANSFORMERS_CACHE="$HF_HOME"
 export HF_DATASETS_CACHE="$HF_HOME/datasets"
 
-uv sync
+uv sync --frozen
 
 JOB_LOG="$LOG_DIR/e2e_${PBS_JOBID}.log"
 

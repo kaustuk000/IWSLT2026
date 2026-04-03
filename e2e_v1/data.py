@@ -27,12 +27,24 @@ class BhoHinDataset(Dataset):
         audio_path = f"{self.base_path}/{self.split}/{row.wav_path}"
         info = sf.info(audio_path)
         sr = int(info.samplerate)
+        total_frames = int(info.frames)
+        if total_frames <= 0:
+            raise ValueError(f"Audio file has no frames: {audio_path}")
+
         frame_offset = max(0, int(round(float(row.start) * sr)))
+        frame_offset = min(frame_offset, total_frames - 1)
         num_frames = max(1, int(round(float(row.duration) * sr)))
+        num_frames = min(num_frames, total_frames - frame_offset)
 
         with sf.SoundFile(audio_path) as audio_file:
             audio_file.seek(frame_offset)
             waveform = audio_file.read(num_frames, dtype="float32", always_2d=True)
+
+        if waveform.shape[0] == 0:
+            raise ValueError(
+                f"Empty audio segment for {audio_path} "
+                f"(start={row.start}, duration={row.duration})"
+            )
 
         waveform = torch.from_numpy(waveform.T)
         if waveform.shape[0] > 1:
