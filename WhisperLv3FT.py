@@ -35,7 +35,6 @@ from transformers import (
     Seq2SeqTrainer,
     TrainerCallback,
 )
-import matplotlib.pyplot as plt
 from torch.utils.data import Dataset
 from peft import LoraConfig, get_peft_model
 import librosa
@@ -56,6 +55,8 @@ DATASET_NAME  = "ai4bharat/Rural_Women_Bhojpuri"
 SAMPLE_RATE   = 16000
 MAX_AUDIO_SEC = 20       
 SEEDS         = [42, 1337, 2024]
+WHISPER_LANGUAGE          = None
+WHISPER_TASK              = "transcribe"
 BASELINE_SAMPLES        = 20
 BASELINE_BATCH_SIZE     = 8
 BASELINE_NUM_BEAMS      = 1
@@ -75,6 +76,15 @@ SYNTHETIC_SAMPLES = 8000
 TEST_SIZE         = 1500
 VAL_SIZE          = 1500
 TRAIN_SIZE        = REAL_SAMPLES + SYNTHETIC_SAMPLES
+PER_DEVICE_TRAIN_BATCH_SIZE = 16
+PER_DEVICE_EVAL_BATCH_SIZE  = 16
+GRADIENT_ACCUMULATION_STEPS = 2
+LEARNING_RATE               = 1e-4
+WARMUP_RATIO                = 0.06
+NUM_TRAIN_EPOCHS            = 4
+GENERATION_MAX_LENGTH       = 128
+GENERATION_NUM_BEAMS        = 5
+LABEL_SMOOTHING_FACTOR      = 0.1
 
 print(f"Train : {TRAIN_SIZE}")
 print(f"Val   : {VAL_SIZE}")
@@ -224,15 +234,17 @@ print("Augmentation defined ✓")
 
 print("Loading processor…")
 processor = WhisperProcessor.from_pretrained(MODEL_NAME)
-processor.tokenizer.set_prefix_tokens(language="hi", task="transcribe")
+processor.tokenizer.set_prefix_tokens(language=WHISPER_LANGUAGE, task=WHISPER_TASK)
 
 print("Loading model…")
 model = WhisperForConditionalGeneration.from_pretrained(MODEL_NAME)
 model.config.use_cache = False
 
-forced_decoder_ids = processor.get_decoder_prompt_ids(language="hi", task="transcribe")
-model.config.forced_decoder_ids            = forced_decoder_ids
-model.generation_config.forced_decoder_ids = forced_decoder_ids
+decoder_prompt_ids = processor.get_decoder_prompt_ids(language=WHISPER_LANGUAGE, task=WHISPER_TASK)
+model.config.forced_decoder_ids = None
+model.generation_config.forced_decoder_ids = None
+model.generation_config.language = WHISPER_LANGUAGE
+model.generation_config.task = WHISPER_TASK
 print("Model loaded ✓")
 
 
@@ -248,6 +260,10 @@ BASELINE_MAX_NEW_TOKENS = min(
     BASELINE_MAX_NEW_TOKENS,
     int(getattr(model.config, "max_target_positions", 448)),
 )
+BASELINE_MAX_LENGTH = min(
+    BASELINE_MAX_NEW_TOKENS + len(decoder_prompt_ids) + 1,
+    int(getattr(model.config, "max_target_positions", 448)),
+)
 BASELINE_USE_AUTOCAST = torch.cuda.is_available() and getattr(torch.cuda, "is_bf16_supported", lambda: False)()
 
 print(
@@ -255,7 +271,7 @@ print(
     f"samples={BASELINE_SAMPLES}  "
     f"batch_size={BASELINE_BATCH_SIZE}  "
     f"beams={BASELINE_NUM_BEAMS}  "
-    f"max_new_tokens={BASELINE_MAX_NEW_TOKENS}  "
+    f"max_length={BASELINE_MAX_LENGTH}  "
     f"autocast={'bf16' if BASELINE_USE_AUTOCAST else 'off'}"
 )
 
@@ -284,7 +300,7 @@ def transcribe_batch(samples: List[dict]) -> Tuple[List[str], List[str]]:
                 input_features,
                 attention_mask=attention_mask,
                 num_beams=BASELINE_NUM_BEAMS,
-                max_new_tokens=BASELINE_MAX_NEW_TOKENS,
+                max_length=BASELINE_MAX_LENGTH,
             )
 
     preds = [
@@ -338,10 +354,12 @@ model.print_trainable_parameters()
 model = model.to(torch.float32)
 print("Model cast to float32 ✓")
 
-# ──    re-apply after LoRA wrapping ──────────────────────
-model.config.forced_decoder_ids            = forced_decoder_ids
-model.generation_config.forced_decoder_ids = forced_decoder_ids
-print("forced_decoder_ids re-applied after LoRA ✓")
+# ── re-apply generation settings after LoRA wrapping ─────────────────────
+model.config.forced_decoder_ids = None
+model.generation_config.forced_decoder_ids = None
+model.generation_config.language = WHISPER_LANGUAGE
+model.generation_config.task = WHISPER_TASK
+print("generation settings re-applied after LoRA ✓")
 
 model.enable_input_require_grads()
 model.gradient_checkpointing_enable()
@@ -355,6 +373,8 @@ VOCAB_SIZE = processor.tokenizer.vocab_size
 MAX_TARGET_POSITIONS = int(getattr(model.config, "max_target_positions", 448))
 TOKENIZER_BOS_ID = processor.tokenizer.bos_token_id
 EOS_TOKEN_ID = processor.tokenizer.eos_token_id
+PAD_TOKEN_ID = processor.tokenizer.pad_token_id
+DECODER_START_TOKEN_ID = model.config.decoder_start_token_id
 print(f"Max decoder positions : {MAX_TARGET_POSITIONS}")
 
 
@@ -376,6 +396,19 @@ def encode_label_ids(text: str) -> List[int]:
             label_ids[-1] = EOS_TOKEN_ID
 
     return label_ids
+
+
+def build_decoder_input_ids(labels: torch.Tensor) -> torch.Tensor:
+    if PAD_TOKEN_ID is None:
+        raise ValueError("Tokenizer pad_token_id is required for decoder input construction.")
+    if DECODER_START_TOKEN_ID is None:
+        raise ValueError("Model decoder_start_token_id is required for decoder input construction.")
+
+    decoder_input_ids = labels.new_full(labels.shape, PAD_TOKEN_ID)
+    decoder_input_ids[:, 1:] = labels[:, :-1].clone()
+    decoder_input_ids[:, 0] = DECODER_START_TOKEN_ID
+    decoder_input_ids.masked_fill_(decoder_input_ids == -100, PAD_TOKEN_ID)
+    return decoder_input_ids
 
 class BhojpuriDataset(Dataset):
     def __init__(self, samples: list, augment: bool = False):
@@ -425,7 +458,6 @@ print("Decoded:", processor.tokenizer.decode(sample_out["labels"]))
 @dataclass
 class DataCollatorSpeechSeq2SeqWithPadding:
     processor: Any
-    model: Any
 
     def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
         # ── input features ──────────────────────────────────
@@ -458,11 +490,11 @@ class DataCollatorSpeechSeq2SeqWithPadding:
                 labels[truncated_rows, MAX_TARGET_POSITIONS - 1] = EOS_TOKEN_ID
 
         batch["labels"] = labels
-        batch["decoder_input_ids"] = self.model.prepare_decoder_input_ids_from_labels(labels=labels)
+        batch["decoder_input_ids"] = build_decoder_input_ids(labels)
 
         return batch
 
-data_collator = DataCollatorSpeechSeq2SeqWithPadding(processor=processor, model=model)
+data_collator = DataCollatorSpeechSeq2SeqWithPadding(processor=processor)
 print("Data collator ✓")
 
 
@@ -541,29 +573,34 @@ print("Callback ✓")
 
 
 
+steps_per_epoch = math.ceil(
+    len(train_dataset) / PER_DEVICE_TRAIN_BATCH_SIZE / GRADIENT_ACCUMULATION_STEPS
+)
+warmup_steps = max(1, math.ceil(WARMUP_RATIO * steps_per_epoch * NUM_TRAIN_EPOCHS))
+
 training_args = Seq2SeqTrainingArguments(
     output_dir=OUTPUT_DIR,
     remove_unused_columns=False,
-    per_device_train_batch_size=16,
-    per_device_eval_batch_size=16,       
-    gradient_accumulation_steps=2,     
+    per_device_train_batch_size=PER_DEVICE_TRAIN_BATCH_SIZE,
+    per_device_eval_batch_size=PER_DEVICE_EVAL_BATCH_SIZE,
+    gradient_accumulation_steps=GRADIENT_ACCUMULATION_STEPS,
     gradient_checkpointing=True,
     dataloader_pin_memory=False,
     dataloader_num_workers=0,          
 
-    learning_rate=1e-4,
+    learning_rate=LEARNING_RATE,
     lr_scheduler_type="cosine",
-    warmup_ratio=0.06,
+    warmup_steps=warmup_steps,
 
-    num_train_epochs=4,                 
+    num_train_epochs=NUM_TRAIN_EPOCHS,
 
     fp16=False,                        
     bf16=True,                        
     fp16_full_eval=False,
 
     predict_with_generate=True,
-    generation_max_length=128,         
-    generation_num_beams=5,           
+    generation_max_length=GENERATION_MAX_LENGTH,
+    generation_num_beams=GENERATION_NUM_BEAMS,
 
     eval_strategy="epoch",
     save_strategy="epoch",
@@ -577,7 +614,7 @@ training_args = Seq2SeqTrainingArguments(
     max_grad_norm=1.0,
     report_to="none",
 
-    label_smoothing_factor=0.1,
+    label_smoothing_factor=LABEL_SMOOTHING_FACTOR,
 )
 print("Training args ✓")
 
