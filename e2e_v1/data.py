@@ -2,6 +2,7 @@ import torch
 import torchaudio
 import pandas as pd
 from torch.utils.data import Dataset
+from dataclasses import dataclass
 
 
 class BhoHinDataset(Dataset):
@@ -36,30 +37,38 @@ class BhoHinDataset(Dataset):
         return {"audio": waveform.squeeze(0), "sampling_rate": sr, "hindi": self.hindi[idx]}
 
 
-def make_collate_fn(processor, tokenizer, max_label_len=128):
-    def collate_fn(batch):
-        target_sr = processor.feature_extractor.sampling_rate
+@dataclass
+class BhoHinCollator:
+    processor: any
+    tokenizer: any
+    max_label_len: int = 128
+
+    def __call__(self, batch):
+        target_sr = self.processor.feature_extractor.sampling_rate
         audio_arrays = []
         for item in batch:
             audio = item["audio"]
             if item["sampling_rate"] != target_sr:
                 audio = torchaudio.functional.resample(audio, item["sampling_rate"], target_sr)
             audio_arrays.append(audio.numpy())
-        hindi_texts  = [b["hindi"] for b in batch]
-        audio_inputs = processor(
+        hindi_texts = [b["hindi"] for b in batch]
+        audio_inputs = self.processor(
             audio_arrays, sampling_rate=target_sr,
             return_tensors="pt", padding=True,
         )
-        label_enc = tokenizer(
+        label_enc = self.tokenizer(
             hindi_texts, return_tensors="pt",
             padding=True, truncation=True,
-            max_length=max_label_len, add_special_tokens=True,
+            max_length=self.max_label_len, add_special_tokens=True,
         )
         labels = label_enc.input_ids
-        labels[labels == tokenizer.pad_token_id] = -100
+        labels[labels == self.tokenizer.pad_token_id] = -100
         return {
-            "input_values":   audio_inputs.input_values,
+            "input_values": audio_inputs.input_values,
             "attention_mask": audio_inputs.attention_mask,
-            "labels":         labels,
+            "labels": labels,
         }
-    return collate_fn
+
+
+def make_collate_fn(processor, tokenizer, max_label_len=128):
+    return BhoHinCollator(processor=processor, tokenizer=tokenizer, max_label_len=max_label_len)

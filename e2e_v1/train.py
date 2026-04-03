@@ -124,7 +124,7 @@ def main():
         raise RuntimeError("HF_TOKEN is not set.")
     clone_data(args.data_dir)
     os.makedirs(args.save_dir, exist_ok=True)
-    num_workers = min(4, os.cpu_count() or 1)
+    num_workers = 0
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device} | GPUs: {torch.cuda.device_count()}")
