@@ -8,7 +8,6 @@ PROJECT_DIR="/auto/plzen1/home/kumar/IWSLT2026-e2e"
 LOG_DIR="$PROJECT_DIR/logs"
 mkdir -p "$LOG_DIR"
 export PATH="/storage/brno2/home/kumar/.local/bin:$PATH"
-export HF_TOKEN="hf_dummy_token"
 
 echo "$PBS_JOBID running on $(hostname -f), scratch: $SCRATCHDIR" >> "$PROJECT_DIR/jobs_info.txt"
 
@@ -33,7 +32,7 @@ uv sync
 JOB_LOG="$LOG_DIR/e2e_${PBS_JOBID}.log"
 
 echo "=== Running e2e training ===" | tee -a "$JOB_LOG"
-bash run.sh >> "$JOB_LOG" 2>&1
+uv run python e2e_v1/train.py >> "$JOB_LOG" 2>&1
 
 if [ -d "$SCRATCHDIR/checkpoints" ]; then
     mkdir -p "$PROJECT_DIR/checkpoints"

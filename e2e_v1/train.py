@@ -20,7 +20,6 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--data_dir",      default="iwslt2026_bho-hi/iwslt2024-2025_bho-hi")
     p.add_argument("--save_dir",      default="checkpoints")
-    p.add_argument("--hf_token",      required=True)
     p.add_argument("--epochs",        type=int,   default=10)
     p.add_argument("--batch_size",    type=int,   default=4)
     p.add_argument("--grad_accum",    type=int,   default=4)
@@ -120,6 +119,9 @@ def evaluate_bleu(dev_loader, mms, qformer, llm, tokenizer, prompt_embeds_1, dev
 
 def main():
     args = parse_args()
+    hf_token = os.environ.get("HF_TOKEN")
+    if not hf_token:
+        raise RuntimeError("HF_TOKEN is not set.")
     clone_data(args.data_dir)
     os.makedirs(args.save_dir, exist_ok=True)
     num_workers = min(4, os.cpu_count() or 1)
@@ -138,7 +140,7 @@ def main():
     )
     llm = AutoModelForCausalLM.from_pretrained(
         "ai4bharat/Airavata",
-        token=args.hf_token,
+        token=hf_token,
         quantization_config=bnb_config,
         device_map="auto",
     )
@@ -151,7 +153,7 @@ def main():
     llm.print_trainable_parameters()
 
     tokenizer = AutoTokenizer.from_pretrained(
-        "ai4bharat/Airavata", token=args.hf_token, use_fast=False
+        "ai4bharat/Airavata", token=hf_token, use_fast=False
     )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
