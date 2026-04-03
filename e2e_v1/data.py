@@ -1,6 +1,7 @@
 import torch
 import torchaudio
 import pandas as pd
+import soundfile as sf
 from torch.utils.data import Dataset
 from dataclasses import dataclass
 
@@ -24,14 +25,16 @@ class BhoHinDataset(Dataset):
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
         audio_path = f"{self.base_path}/{self.split}/{row.wav_path}"
-        info = torchaudio.info(audio_path)
-        frame_offset = max(0, int(round(float(row.start) * info.sample_rate)))
-        num_frames = max(1, int(round(float(row.duration) * info.sample_rate)))
-        waveform, sr = torchaudio.load(
-            audio_path,
-            frame_offset=frame_offset,
-            num_frames=num_frames,
-        )
+        info = sf.info(audio_path)
+        sr = int(info.samplerate)
+        frame_offset = max(0, int(round(float(row.start) * sr)))
+        num_frames = max(1, int(round(float(row.duration) * sr)))
+
+        with sf.SoundFile(audio_path) as audio_file:
+            audio_file.seek(frame_offset)
+            waveform = audio_file.read(num_frames, dtype="float32", always_2d=True)
+
+        waveform = torch.from_numpy(waveform.T)
         if waveform.shape[0] > 1:
             waveform = waveform.mean(dim=0, keepdim=True)
         return {"audio": waveform.squeeze(0), "sampling_rate": sr, "hindi": self.hindi[idx]}
