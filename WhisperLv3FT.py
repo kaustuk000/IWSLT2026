@@ -651,31 +651,3 @@ trainer.train()
 trainer.save_model(SAVE_PATH)
 processor.save_pretrained(SAVE_PATH)
 print("\nTraining complete ✓")
-
-trainer.save_model(SAVE_PATH)
-processor.save_pretrained(SAVE_PATH)
-print("\nTraining complete ✓")
-  train_dataset=train_dataset,
-    eval_dataset=val_dataset,
-    data_collator=data_collator,
-    compute_metrics=compute_metrics,
-    callbacks=[epoch_callback],
-)
-
-# ── Quick batch sanity check before training ──────────────
-print("Sanity checking one batch…")
-batch = data_collator([train_dataset[i] for i in range(2)])
-for k, v in batch.items():
-    print(f"  {k:<22} shape={tuple(v.shape)}  dtype={v.dtype}  "
-          f"min={v[v != -100].min().item():.0f}  max={v.max().item():.0f}")
-print("Batch OK ✓\n")
-
-print("Starting training…\n")
-trainer.train()
-trainer.save_model(SAVE_PATH)
-processor.save_pretrained(SAVE_PATH)
-print("\nTraining complete ✓")
-
-trainer.save_model(SAVE_PATH)
-processor.save_pretrained(SAVE_PATH)
-print("\nTraining complete ✓")
