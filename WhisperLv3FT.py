@@ -284,10 +284,10 @@ print("="*55)
 
 
 lora_config = LoraConfig(
-    r=16,
-    lora_alpha=32,
+    r=64,
+    lora_alpha=128,
     target_modules=["q_proj", "v_proj", "k_proj", "out_proj"],
-    lora_dropout=0.1,
+    lora_dropout=0.05,
     bias="none"
 )
 model = get_peft_model(model, lora_config)
@@ -309,7 +309,7 @@ print("Gradient checkpointing ✓")
 
 
 
-VOCAB_SIZE = processor.tokenizer.vocab_size   # ← used to clamp labels
+VOCAB_SIZE = processor.tokenizer.vocab_size 
 
 class BhojpuriDataset(Dataset):
     def __init__(self, samples: list, augment: bool = False):
@@ -339,7 +339,7 @@ class BhojpuriDataset(Dataset):
             return_tensors="pt"
         ).input_ids[0].tolist()
 
-        # ── FIX: clamp label IDs to valid vocab range ──────
+        # ──  clamp label IDs to valid vocab range ──────
         label_ids = [
             t for t in label_ids
             if 0 <= t < VOCAB_SIZE
@@ -471,7 +471,6 @@ class EpochSummaryCallback(TrainerCallback):
         print(f"\n  ✓ Best Epoch : {int(best['Epoch'])}  "
               f"WER: {best['WER (%)']}%  CER: {best['CER (%)']}%")
         print("="*65)
-        df.to_csv("/kaggle/working/epoch_summary.csv", index=False)
 
 epoch_callback = EpochSummaryCallback()
 print("Callback ✓")
@@ -482,26 +481,26 @@ print("Callback ✓")
 training_args = Seq2SeqTrainingArguments(
     output_dir=OUTPUT_DIR,
     remove_unused_columns=False,
-    per_device_train_batch_size=1,
-    per_device_eval_batch_size=1,       # ← reduced from 2 (OOM fix)
-    gradient_accumulation_steps=4,      # ← reduced from 16 (faster for smoke test)
+    per_device_train_batch_size=16,
+    per_device_eval_batch_size=16,       
+    gradient_accumulation_steps=2,     
     gradient_checkpointing=True,
     dataloader_pin_memory=False,
-    dataloader_num_workers=0,           # ← added (avoids multiprocess issues on Kaggle)
+    dataloader_num_workers=0,          
 
-    learning_rate=3e-4,
+    learning_rate=1e-4,
     lr_scheduler_type="cosine",
     warmup_ratio=0.06,
 
-    num_train_epochs=4,                 # ← 1 epoch smoke test
+    num_train_epochs=4,                 
 
-    fp16=False,                         # ← FIX: was True, conflicted with float32 model
-    bf16=True,                          # ← FIX: bf16 is stable with LoRA
+    fp16=False,                        
+    bf16=True,                        
     fp16_full_eval=False,
 
     predict_with_generate=True,
-    generation_max_length=128,          # ← reduced from 225 (OOM fix)
-    generation_num_beams=1,             # ← FIX: greedy (was 10, major OOM culprit)
+    generation_max_length=128,         
+    generation_num_beams=5,           
 
     eval_strategy="epoch",
     save_strategy="epoch",
@@ -509,9 +508,9 @@ training_args = Seq2SeqTrainingArguments(
     metric_for_best_model="wer",
     greater_is_better=False,
 
-    logging_steps=5,
+    logging_steps=50,
     logging_first_step=True,
-    save_total_limit=1,                 # ← reduced from 2 (saves disk)
+    save_total_limit=3,               
     max_grad_norm=1.0,
     report_to="none",
 
