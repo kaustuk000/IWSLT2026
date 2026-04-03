@@ -10,8 +10,12 @@ if torch.cuda.device_count() > 1:
     print(f"DataParallel disabled — was seeing {torch.cuda.device_count()} GPUs")
 
 print(f"Visible GPUs : {torch.cuda.device_count()}")
-print(f"Active GPU   : {torch.cuda.get_device_name(0)}")
-print(f"VRAM         : {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
+if torch.cuda.is_available():
+    print(f"Active GPU   : {torch.cuda.get_device_name(0)}")
+    print(f"VRAM         : {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
+else:
+    print("Active GPU   : None")
+    print("VRAM         : 0.0 GB")
 print("done")
 
 
@@ -55,7 +59,7 @@ DATASET_NAME  = "ai4bharat/Rural_Women_Bhojpuri"
 SAMPLE_RATE   = 16000
 MAX_AUDIO_SEC = 20       
 SEEDS         = [42, 1337, 2024]
-WHISPER_LANGUAGE          = None
+WHISPER_LANGUAGE          = "hi"
 WHISPER_TASK              = "transcribe"
 BASELINE_SAMPLES        = 20
 BASELINE_BATCH_SIZE     = 8
@@ -96,7 +100,8 @@ def set_seed(seed: int):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 set_seed(SEEDS[0])
 print(f"Seed set to {SEEDS[0]} ✓")
@@ -117,7 +122,7 @@ ds_bench = load_dataset(DATASET_NAME, split=SPLIT_BENCHMARK, streaming=True)
 bench_samples = list(ds_bench.take(VAL_SIZE + TEST_SIZE))  
 print(f"  benchmark       : {len(bench_samples)} samples")
 
-random.seed(42)
+random.seed(SEEDS[0])
 random.shuffle(real_samples)
 random.shuffle(syn_samples)
 random.shuffle(bench_samples)
@@ -277,17 +282,24 @@ print(
 
 
 def transcribe_batch(samples: List[dict]) -> Tuple[List[str], List[str]]:
-    arrays = [load_audio(sample) for sample in samples]
-    inputs = processor(
-        arrays,
-        sampling_rate=SAMPLE_RATE,
-        return_tensors="pt",
-        return_attention_mask=True,
-        padding=True,
-    )
-    input_features = inputs.input_features.to(model.device)
-    attention_mask = inputs.attention_mask.to(model.device)
-    refs = [normalize_text(sample["text"]) for sample in samples]
+    feature_tensors = []
+    attention_masks = []
+    refs = []
+
+    for sample in samples:
+        array = load_audio(sample)
+        inputs = processor(
+            array,
+            sampling_rate=SAMPLE_RATE,
+            return_tensors="pt",
+            return_attention_mask=True,
+        )
+        feature_tensors.append(inputs.input_features[0])
+        attention_masks.append(inputs.attention_mask[0])
+        refs.append(normalize_text(sample["text"]))
+
+    input_features = torch.stack(feature_tensors).to(model.device)
+    attention_mask = torch.stack(attention_masks).to(model.device)
     autocast_ctx = (
         torch.autocast(device_type="cuda", dtype=torch.bfloat16)
         if BASELINE_USE_AUTOCAST
@@ -344,7 +356,7 @@ model.config.use_cache = baseline_cache_state
 lora_config = LoraConfig(
     r=64,
     lora_alpha=128,
-    target_modules=["q_proj", "v_proj", "k_proj", "out_proj"],
+    target_modules=["q_proj", "v_proj", "k_proj", "out_proj", "fc1", "fc2"],
     lora_dropout=0.05,
     bias="none"
 )
@@ -386,29 +398,13 @@ def encode_label_ids(text: str) -> List[int]:
 
     label_ids = [t for t in label_ids if 0 <= t < VOCAB_SIZE]
 
-    max_label_tokens = MAX_TARGET_POSITIONS
-    if label_ids and label_ids[0] == TOKENIZER_BOS_ID:
-        max_label_tokens += 1
-
-    if len(label_ids) > max_label_tokens:
-        label_ids = label_ids[:max_label_tokens]
+    if len(label_ids) > MAX_TARGET_POSITIONS:
+        label_ids = label_ids[:MAX_TARGET_POSITIONS]
         if EOS_TOKEN_ID is not None:
             label_ids[-1] = EOS_TOKEN_ID
 
     return label_ids
 
-
-def build_decoder_input_ids(labels: torch.Tensor) -> torch.Tensor:
-    if PAD_TOKEN_ID is None:
-        raise ValueError("Tokenizer pad_token_id is required for decoder input construction.")
-    if DECODER_START_TOKEN_ID is None:
-        raise ValueError("Model decoder_start_token_id is required for decoder input construction.")
-
-    decoder_input_ids = labels.new_full(labels.shape, PAD_TOKEN_ID)
-    decoder_input_ids[:, 1:] = labels[:, :-1].clone()
-    decoder_input_ids[:, 0] = DECODER_START_TOKEN_ID
-    decoder_input_ids.masked_fill_(decoder_input_ids == -100, PAD_TOKEN_ID)
-    return decoder_input_ids
 
 class BhojpuriDataset(Dataset):
     def __init__(self, samples: list, augment: bool = False):
@@ -470,28 +466,36 @@ class DataCollatorSpeechSeq2SeqWithPadding:
         labels_batch   = self.processor.tokenizer.pad(
             label_features, return_tensors="pt", return_attention_mask=True
         )
-        label_lengths = labels_batch["attention_mask"].sum(dim=1)
-        labels = labels_batch["input_ids"].masked_fill(
-            labels_batch["attention_mask"].ne(1), -100
-        )
-        remove_bos = (labels[:, 0] == self.processor.tokenizer.bos_token_id).all()
-        if remove_bos:
-            labels = labels[:, 1:]
-            label_lengths = label_lengths - 1
+        labels = labels_batch["input_ids"]
+        
+        # Identify prefix length (usually 4 tokens for Whisper)
+        prefix_ids = self.processor.tokenizer("", add_special_tokens=True).input_ids
+        if prefix_ids[-1] == self.processor.tokenizer.eos_token_id:
+            prefix_ids = prefix_ids[:-1]
+        n_prefix = len(prefix_ids)
 
-        # ── FIX: clamp to valid vocab range (second safety layer) ──
+        # ── Construct decoder_input_ids ──
+        decoder_input_ids = labels.clone()
+        decoder_input_ids.masked_fill_(labels_batch["attention_mask"].ne(1), PAD_TOKEN_ID)
+
+        # ── Final Labels Processing ──
+        labels = labels.masked_fill(labels_batch["attention_mask"].ne(1), -100)
+        if n_prefix > 0:
+            labels[:, :n_prefix] = -100
+        
         valid_mask = labels != -100
         labels[valid_mask] = labels[valid_mask].clamp(0, VOCAB_SIZE - 1)
 
         if labels.size(1) > MAX_TARGET_POSITIONS:
             labels = labels[:, :MAX_TARGET_POSITIONS]
+            decoder_input_ids = decoder_input_ids[:, :MAX_TARGET_POSITIONS]
+            label_lengths = labels_batch["attention_mask"].sum(dim=1)
             truncated_rows = label_lengths > MAX_TARGET_POSITIONS
             if EOS_TOKEN_ID is not None and truncated_rows.any():
                 labels[truncated_rows, MAX_TARGET_POSITIONS - 1] = EOS_TOKEN_ID
 
         batch["labels"] = labels
-        batch["decoder_input_ids"] = build_decoder_input_ids(labels)
-
+        batch["decoder_input_ids"] = decoder_input_ids
         return batch
 
 data_collator = DataCollatorSpeechSeq2SeqWithPadding(processor=processor)
@@ -620,7 +624,8 @@ print("Training args ✓")
 
 
 
-torch.cuda.empty_cache()
+if torch.cuda.is_available():
+    torch.cuda.empty_cache()
 gc.collect()
 
 trainer = Seq2SeqTrainer(
@@ -643,6 +648,34 @@ print("Batch OK ✓\n")
 
 print("Starting training…\n")
 trainer.train()
+trainer.save_model(SAVE_PATH)
+processor.save_pretrained(SAVE_PATH)
+print("\nTraining complete ✓")
+
+trainer.save_model(SAVE_PATH)
+processor.save_pretrained(SAVE_PATH)
+print("\nTraining complete ✓")
+  train_dataset=train_dataset,
+    eval_dataset=val_dataset,
+    data_collator=data_collator,
+    compute_metrics=compute_metrics,
+    callbacks=[epoch_callback],
+)
+
+# ── Quick batch sanity check before training ──────────────
+print("Sanity checking one batch…")
+batch = data_collator([train_dataset[i] for i in range(2)])
+for k, v in batch.items():
+    print(f"  {k:<22} shape={tuple(v.shape)}  dtype={v.dtype}  "
+          f"min={v[v != -100].min().item():.0f}  max={v.max().item():.0f}")
+print("Batch OK ✓\n")
+
+print("Starting training…\n")
+trainer.train()
+trainer.save_model(SAVE_PATH)
+processor.save_pretrained(SAVE_PATH)
+print("\nTraining complete ✓")
+
 trainer.save_model(SAVE_PATH)
 processor.save_pretrained(SAVE_PATH)
 print("\nTraining complete ✓")
