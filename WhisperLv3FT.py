@@ -22,6 +22,7 @@ import re
 import random
 import numpy as np
 import pandas as pd
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 from scipy.stats import t as t_dist
@@ -55,6 +56,10 @@ DATASET_NAME  = "ai4bharat/Rural_Women_Bhojpuri"
 SAMPLE_RATE   = 16000
 MAX_AUDIO_SEC = 20       
 SEEDS         = [42, 1337, 2024]
+BASELINE_SAMPLES        = 20
+BASELINE_BATCH_SIZE     = 8
+BASELINE_NUM_BEAMS      = 1
+BASELINE_MAX_NEW_TOKENS = 128
 WORK_DIR      = os.environ.get("WORK_DIR", os.getcwd())
 OUTPUT_DIR    = os.path.join(WORK_DIR, "whisper-bhojpuri")
 SAVE_PATH     = os.path.join(WORK_DIR, "whisper-bhojpuri-final")
@@ -236,39 +241,70 @@ print("\nComputing zero-shot baseline on val set…")
 model.eval()
 model = model.to(torch.float32)
 
-def transcribe_single(sample: dict) -> Tuple[str, str]:
-    array = load_audio(sample)
+BASELINE_SAMPLES = min(BASELINE_SAMPLES, len(val_samples))
+BASELINE_BATCH_SIZE = max(1, BASELINE_BATCH_SIZE)
+BASELINE_NUM_BEAMS = max(1, BASELINE_NUM_BEAMS)
+BASELINE_MAX_NEW_TOKENS = min(
+    BASELINE_MAX_NEW_TOKENS,
+    int(getattr(model.config, "max_target_positions", 448)),
+)
+BASELINE_USE_AUTOCAST = torch.cuda.is_available() and getattr(torch.cuda, "is_bf16_supported", lambda: False)()
+
+print(
+    "Baseline config : "
+    f"samples={BASELINE_SAMPLES}  "
+    f"batch_size={BASELINE_BATCH_SIZE}  "
+    f"beams={BASELINE_NUM_BEAMS}  "
+    f"max_new_tokens={BASELINE_MAX_NEW_TOKENS}  "
+    f"autocast={'bf16' if BASELINE_USE_AUTOCAST else 'off'}"
+)
+
+
+def transcribe_batch(samples: List[dict]) -> Tuple[List[str], List[str]]:
+    arrays = [load_audio(sample) for sample in samples]
     inputs = processor(
-        array,
+        arrays,
         sampling_rate=SAMPLE_RATE,
         return_tensors="pt",
-        return_attention_mask=True
+        return_attention_mask=True,
+        padding=True,
     )
-    input_features = inputs.input_features.to(model.device).to(model.dtype)
+    input_features = inputs.input_features.to(model.device)
     attention_mask = inputs.attention_mask.to(model.device)
+    refs = [normalize_text(sample["text"]) for sample in samples]
+    autocast_ctx = (
+        torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+        if BASELINE_USE_AUTOCAST
+        else nullcontext()
+    )
 
-    with torch.no_grad():
-        pred_ids = model.generate(
-            input_features,
-            attention_mask=attention_mask,
-            task="transcribe",
-            language="hi",
-            num_beams=1,    # ← greedy for baseline speed (was 5)
-        )
+    with torch.inference_mode():
+        with autocast_ctx:
+            pred_ids = model.generate(
+                input_features,
+                attention_mask=attention_mask,
+                num_beams=BASELINE_NUM_BEAMS,
+                max_new_tokens=BASELINE_MAX_NEW_TOKENS,
+            )
 
-    pred = processor.batch_decode(pred_ids, skip_special_tokens=True)[0]
-    ref  = sample["text"]
-    return normalize_text(pred), normalize_text(ref)
+    preds = [
+        normalize_text(pred)
+        for pred in processor.batch_decode(pred_ids, skip_special_tokens=True)
+    ]
+    return preds, refs
 
 
-BASELINE_SAMPLES = min(int(os.environ.get("BASELINE_SAMPLES", "20")), len(val_samples))
 baseline_preds, baseline_refs = [], []
+baseline_cache_state = model.config.use_cache
 
 if BASELINE_SAMPLES > 0:
-    for s in tqdm(val_samples[:BASELINE_SAMPLES], desc="Baseline eval"):
-        pred, ref = transcribe_single(s)
-        baseline_preds.append(pred)
-        baseline_refs.append(ref)
+    model.config.use_cache = True
+    baseline_subset = val_samples[:BASELINE_SAMPLES]
+    for start in tqdm(range(0, len(baseline_subset), BASELINE_BATCH_SIZE), desc="Baseline eval"):
+        batch_samples = baseline_subset[start : start + BASELINE_BATCH_SIZE]
+        preds, refs = transcribe_batch(batch_samples)
+        baseline_preds.extend(preds)
+        baseline_refs.extend(refs)
 
     baseline_wer = wer(baseline_refs, baseline_preds)
     baseline_cer = cer(baseline_refs, baseline_preds)
@@ -281,6 +317,8 @@ if BASELINE_SAMPLES > 0:
     print("="*55)
 else:
     print("\nSkipping zero-shot baseline (BASELINE_SAMPLES=0)")
+
+model.config.use_cache = baseline_cache_state
 
 
 
