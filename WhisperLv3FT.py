@@ -99,7 +99,7 @@ USE_FP16 = torch.cuda.is_available() and not USE_BF16
 MODEL_DTYPE = torch.bfloat16 if USE_BF16 else torch.float16 if USE_FP16 else torch.float32
 BASELINE_NUM_BEAMS = 2
 EVAL_NUM_BEAMS = 2
-DATA_LOADER_WORKERS = min(4, os.cpu_count() or 1)
+DATA_LOADER_WORKERS = 0
  
 print(f"Train : {TRAIN_SIZE}")
 print(f"Val   : {VAL_SIZE}")
