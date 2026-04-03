@@ -1,7 +1,7 @@
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-os.environ["PYTORCH_ALLOC_CONF"]   = "expandable_segments:True"
-os.environ["CUDA_LAUNCH_BLOCKING"] = "1"  
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
+os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
+os.environ.setdefault("CUDA_LAUNCH_BLOCKING", "0")
 
 import torch
 
@@ -55,9 +55,10 @@ DATASET_NAME  = "ai4bharat/Rural_Women_Bhojpuri"
 SAMPLE_RATE   = 16000
 MAX_AUDIO_SEC = 20       
 SEEDS         = [42, 1337, 2024]
-OUTPUT_DIR    = "/kaggle/working/whisper-bhojpuri"
-SAVE_PATH     = "/kaggle/working/whisper-bhojpuri-final"
-LM_ARPA_PATH  = "/kaggle/working/bhojpuri_lm.arpa"
+WORK_DIR      = os.environ.get("WORK_DIR", os.getcwd())
+OUTPUT_DIR    = os.path.join(WORK_DIR, "whisper-bhojpuri")
+SAVE_PATH     = os.path.join(WORK_DIR, "whisper-bhojpuri-final")
+LM_ARPA_PATH  = os.path.join(WORK_DIR, "bhojpuri_lm.arpa")
 
 SPLIT_REAL      = "train_real"
 SPLIT_SYNTHETIC = "train_synthetic"
@@ -156,7 +157,8 @@ def play_audio(sample):
     array = load_audio(sample)
     display(Audio(array, rate=SAMPLE_RATE))
 
-play_audio(train_samples[0])
+if os.environ.get("ENABLE_AUDIO_PREVIEW", "0") == "1":
+    play_audio(train_samples[0])
 
 
 def add_gaussian_noise(array: np.ndarray, snr_db_range=(15, 30)) -> np.ndarray:
@@ -259,23 +261,26 @@ def transcribe_single(sample: dict) -> Tuple[str, str]:
     return normalize_text(pred), normalize_text(ref)
 
 
-BASELINE_SAMPLES = min(20, len(val_samples))   # ← tiny
+BASELINE_SAMPLES = min(int(os.environ.get("BASELINE_SAMPLES", "20")), len(val_samples))
 baseline_preds, baseline_refs = [], []
 
-for s in tqdm(val_samples[:BASELINE_SAMPLES], desc="Baseline eval"):
-    pred, ref = transcribe_single(s)
-    baseline_preds.append(pred)
-    baseline_refs.append(ref)
+if BASELINE_SAMPLES > 0:
+    for s in tqdm(val_samples[:BASELINE_SAMPLES], desc="Baseline eval"):
+        pred, ref = transcribe_single(s)
+        baseline_preds.append(pred)
+        baseline_refs.append(ref)
 
-baseline_wer = wer(baseline_refs, baseline_preds)
-baseline_cer = cer(baseline_refs, baseline_preds)
+    baseline_wer = wer(baseline_refs, baseline_preds)
+    baseline_cer = cer(baseline_refs, baseline_preds)
 
-print("\n" + "="*55)
-print("  ZERO-SHOT BASELINE (Whisper-large-v3, no FT)")
-print("="*55)
-print(f"  WER : {baseline_wer*100:.2f}%")
-print(f"  CER : {baseline_cer*100:.2f}%")
-print("="*55)
+    print("\n" + "="*55)
+    print("  ZERO-SHOT BASELINE (Whisper-large-v3, no FT)")
+    print("="*55)
+    print(f"  WER : {baseline_wer*100:.2f}%")
+    print(f"  CER : {baseline_cer*100:.2f}%")
+    print("="*55)
+else:
+    print("\nSkipping zero-shot baseline (BASELINE_SAMPLES=0)")
 
 
 
@@ -382,6 +387,7 @@ print("Decoded:", processor.tokenizer.decode(sample_out["labels"]))
 @dataclass
 class DataCollatorSpeechSeq2SeqWithPadding:
     processor: Any
+    model: Any
 
     def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
         # ── input features ──────────────────────────────────
@@ -414,10 +420,11 @@ class DataCollatorSpeechSeq2SeqWithPadding:
                 labels[truncated_rows, MAX_TARGET_POSITIONS - 1] = EOS_TOKEN_ID
 
         batch["labels"] = labels
+        batch["decoder_input_ids"] = self.model.prepare_decoder_input_ids_from_labels(labels=labels)
 
         return batch
 
-data_collator = DataCollatorSpeechSeq2SeqWithPadding(processor=processor)
+data_collator = DataCollatorSpeechSeq2SeqWithPadding(processor=processor, model=model)
 print("Data collator ✓")
 
 
@@ -538,7 +545,6 @@ print("Training args ✓")
 
 
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 torch.cuda.empty_cache()
 gc.collect()
 
@@ -562,4 +568,6 @@ print("Batch OK ✓\n")
 
 print("Starting training…\n")
 trainer.train()
+trainer.save_model(SAVE_PATH)
+processor.save_pretrained(SAVE_PATH)
 print("\nTraining complete ✓")
