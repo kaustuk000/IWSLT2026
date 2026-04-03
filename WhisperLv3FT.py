@@ -308,7 +308,31 @@ print("Gradient checkpointing ✓")
 
 
 
-VOCAB_SIZE = processor.tokenizer.vocab_size 
+VOCAB_SIZE = processor.tokenizer.vocab_size
+MAX_TARGET_POSITIONS = int(getattr(model.config, "max_target_positions", 448))
+TOKENIZER_BOS_ID = processor.tokenizer.bos_token_id
+EOS_TOKEN_ID = processor.tokenizer.eos_token_id
+print(f"Max decoder positions : {MAX_TARGET_POSITIONS}")
+
+
+def encode_label_ids(text: str) -> List[int]:
+    label_ids = processor.tokenizer(
+        normalize_text(text),
+        add_special_tokens=True,
+    ).input_ids
+
+    label_ids = [t for t in label_ids if 0 <= t < VOCAB_SIZE]
+
+    max_label_tokens = MAX_TARGET_POSITIONS
+    if label_ids and label_ids[0] == TOKENIZER_BOS_ID:
+        max_label_tokens += 1
+
+    if len(label_ids) > max_label_tokens:
+        label_ids = label_ids[:max_label_tokens]
+        if EOS_TOKEN_ID is not None:
+            label_ids[-1] = EOS_TOKEN_ID
+
+    return label_ids
 
 class BhojpuriDataset(Dataset):
     def __init__(self, samples: list, augment: bool = False):
@@ -333,16 +357,7 @@ class BhojpuriDataset(Dataset):
         if self.augment:
             features = spec_augment(features)
 
-        label_ids = processor.tokenizer(
-            normalize_text(sample["text"]),
-            return_tensors="pt"
-        ).input_ids[0].tolist()
-
-        # ──  clamp label IDs to valid vocab range ──────
-        label_ids = [
-            t for t in label_ids
-            if 0 <= t < VOCAB_SIZE
-        ]
+        label_ids = encode_label_ids(sample["text"])
 
         return {
             "input_features": features,
@@ -379,22 +394,26 @@ class DataCollatorSpeechSeq2SeqWithPadding:
         labels_batch   = self.processor.tokenizer.pad(
             label_features, return_tensors="pt", return_attention_mask=True
         )
+        label_lengths = labels_batch["attention_mask"].sum(dim=1)
         labels = labels_batch["input_ids"].masked_fill(
             labels_batch["attention_mask"].ne(1), -100
         )
-        if (labels[:, 0] == self.processor.tokenizer.bos_token_id).all():
+        remove_bos = (labels[:, 0] == self.processor.tokenizer.bos_token_id).all()
+        if remove_bos:
             labels = labels[:, 1:]
+            label_lengths = label_lengths - 1
 
         # ── FIX: clamp to valid vocab range (second safety layer) ──
         valid_mask = labels != -100
         labels[valid_mask] = labels[valid_mask].clamp(0, VOCAB_SIZE - 1)
 
-        batch["labels"] = labels
+        if labels.size(1) > MAX_TARGET_POSITIONS:
+            labels = labels[:, :MAX_TARGET_POSITIONS]
+            truncated_rows = label_lengths > MAX_TARGET_POSITIONS
+            if EOS_TOKEN_ID is not None and truncated_rows.any():
+                labels[truncated_rows, MAX_TARGET_POSITIONS - 1] = EOS_TOKEN_ID
 
-        decoder_start = self.processor.tokenizer.convert_tokens_to_ids("<|startoftranscript|>")
-        shifted = labels.masked_fill(labels == -100, self.processor.tokenizer.pad_token_id)
-        bos_col = torch.full((shifted.size(0), 1), decoder_start, dtype=torch.long)
-        batch["decoder_input_ids"] = torch.cat([bos_col, shifted[:, :-1]], dim=1)
+        batch["labels"] = labels
 
         return batch
 
