@@ -17,8 +17,7 @@ print("done")
 
 
 
-import os, gc, math, json, itertools, subprocess, tempfile
-import torch
+import gc, math, json, itertools, subprocess, tempfile
 import re
 import random
 import numpy as np
