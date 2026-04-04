@@ -1,7 +1,7 @@
 import os
-os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
-os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
-os.environ.setdefault("CUDA_LAUNCH_BLOCKING", "0")
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["PYTORCH_ALLOC_CONF"]   = "expandable_segments:True"
+os.environ["CUDA_LAUNCH_BLOCKING"] = "1"   # ← helps catch exact assert error location
 
 import torch
 
@@ -10,23 +10,15 @@ if torch.cuda.device_count() > 1:
     print(f"DataParallel disabled — was seeing {torch.cuda.device_count()} GPUs")
 
 print(f"Visible GPUs : {torch.cuda.device_count()}")
-if torch.cuda.is_available():
-    print(f"Active GPU   : {torch.cuda.get_device_name(0)}")
-    print(f"VRAM         : {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
-else:
-    print("Active GPU   : None")
-    print("VRAM         : 0.0 GB")
+print(f"Active GPU   : {torch.cuda.get_device_name(0)}")
+print(f"VRAM         : {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
 print("done")
-
-
-
 
 import gc, math, json, itertools, subprocess, tempfile
 import re
 import random
 import numpy as np
 import pandas as pd
-from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 from scipy.stats import t as t_dist
@@ -39,6 +31,7 @@ from transformers import (
     Seq2SeqTrainer,
     TrainerCallback,
 )
+import matplotlib.pyplot as plt
 from torch.utils.data import Dataset
 from peft import LoraConfig, get_peft_model
 import librosa
@@ -57,14 +50,8 @@ if torch.cuda.is_available():
 MODEL_NAME    = "openai/whisper-large-v3"
 DATASET_NAME  = "ai4bharat/Rural_Women_Bhojpuri"
 SAMPLE_RATE   = 16000
-MAX_AUDIO_SEC = 20       
+MAX_AUDIO_SEC = 20      
 SEEDS         = [42, 1337, 2024]
-WHISPER_LANGUAGE          = "hi"
-WHISPER_TASK              = "transcribe"
-BASELINE_SAMPLES        = 20
-BASELINE_BATCH_SIZE     = 8
-BASELINE_NUM_BEAMS      = 1
-BASELINE_MAX_NEW_TOKENS = 128
 WORK_DIR      = os.environ.get("WORK_DIR", os.getcwd())
 OUTPUT_DIR    = os.path.join(WORK_DIR, "whisper-bhojpuri")
 SAVE_PATH     = os.path.join(WORK_DIR, "whisper-bhojpuri-final")
@@ -74,34 +61,22 @@ SPLIT_REAL      = "train_real"
 SPLIT_SYNTHETIC = "train_synthetic"
 SPLIT_BENCHMARK = "benchmark"
 
-
 REAL_SAMPLES      = 400
-SYNTHETIC_SAMPLES = 8000
-TEST_SIZE         = 1500
-VAL_SIZE          = 1500
+SYNTHETIC_SAMPLES = 5000
+TEST_SIZE         = 222
+VAL_SIZE          = 222
 TRAIN_SIZE        = REAL_SAMPLES + SYNTHETIC_SAMPLES
-PER_DEVICE_TRAIN_BATCH_SIZE = 8
-PER_DEVICE_EVAL_BATCH_SIZE  = 8
-GRADIENT_ACCUMULATION_STEPS = 4
-LEARNING_RATE               = 1e-4
-WARMUP_RATIO                = 0.06
-NUM_TRAIN_EPOCHS            = 4
-GENERATION_MAX_LENGTH       = 128
-GENERATION_NUM_BEAMS        = 5
-LABEL_SMOOTHING_FACTOR      = 0.1
 
 print(f"Train : {TRAIN_SIZE}")
 print(f"Val   : {VAL_SIZE}")
-print(f"Test  : {TEST_SIZE}")
-
+print(f"Test  : {TEST_SIZE}  ← only touched ONCE at the very end")
 
 
 def set_seed(seed: int):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
+    torch.cuda.manual_seed_all(seed)
 
 set_seed(SEEDS[0])
 print(f"Seed set to {SEEDS[0]} ✓")
@@ -109,7 +84,7 @@ print(f"Seed set to {SEEDS[0]} ✓")
 
 print("Loading train_real…")
 ds_real = load_dataset(DATASET_NAME, split=SPLIT_REAL, streaming=True)
-real_samples = list(ds_real.take(REAL_SAMPLES)) 
+real_samples = list(ds_real.take(REAL_SAMPLES))  
 print(f"  train_real      : {len(real_samples)} samples")
 
 print("Loading train_synthetic…")
@@ -119,10 +94,10 @@ print(f"  train_synthetic : {len(syn_samples)} samples")
 
 print("Loading benchmark…")
 ds_bench = load_dataset(DATASET_NAME, split=SPLIT_BENCHMARK, streaming=True)
-bench_samples = list(ds_bench.take(VAL_SIZE + TEST_SIZE))  
+bench_samples = list(ds_bench.take(VAL_SIZE + TEST_SIZE)) 
 print(f"  benchmark       : {len(bench_samples)} samples")
 
-random.seed(SEEDS[0])
+random.seed(42)
 random.shuffle(real_samples)
 random.shuffle(syn_samples)
 random.shuffle(bench_samples)
@@ -145,7 +120,6 @@ print(f"  Val   : {VAL_SIZE}")
 print(f"  Test  : {TEST_SIZE}  ← do NOT touch until final eval")
 
 
-
 DEVANAGARI_DIGITS = {
     "०": "0", "१": "1", "२": "2", "३": "3", "४": "4",
     "५": "5", "६": "6", "७": "7", "८": "8", "९": "9"
@@ -162,8 +136,6 @@ def normalize_text(text: str) -> str:
 print("Normalization check:", normalize_text("हेलो, World! ३४५"))
 
 
-
-
 def load_audio(sample: dict) -> np.ndarray:
     array = np.array(sample["audio"]["array"], dtype=np.float32)
     src_sr = sample["audio"]["sampling_rate"]
@@ -177,8 +149,7 @@ def play_audio(sample):
     array = load_audio(sample)
     display(Audio(array, rate=SAMPLE_RATE))
 
-if os.environ.get("ENABLE_AUDIO_PREVIEW", "0") == "1":
-    play_audio(train_samples[0])
+play_audio(train_samples[0])
 
 
 def add_gaussian_noise(array: np.ndarray, snr_db_range=(15, 30)) -> np.ndarray:
@@ -239,125 +210,72 @@ print("Augmentation defined ✓")
 
 print("Loading processor…")
 processor = WhisperProcessor.from_pretrained(MODEL_NAME)
-processor.tokenizer.set_prefix_tokens(language=WHISPER_LANGUAGE, task=WHISPER_TASK)
+processor.tokenizer.set_prefix_tokens(language="hi", task="transcribe")
 
 print("Loading model…")
 model = WhisperForConditionalGeneration.from_pretrained(MODEL_NAME)
 model.config.use_cache = False
 
-decoder_prompt_ids = processor.get_decoder_prompt_ids(language=WHISPER_LANGUAGE, task=WHISPER_TASK)
-model.config.forced_decoder_ids = None
-model.generation_config.forced_decoder_ids = None
-model.generation_config.language = WHISPER_LANGUAGE
-model.generation_config.task = WHISPER_TASK
+forced_decoder_ids = processor.get_decoder_prompt_ids(language="hi", task="transcribe")
+model.config.forced_decoder_ids            = forced_decoder_ids
+model.generation_config.forced_decoder_ids = forced_decoder_ids
 print("Model loaded ✓")
-
 
 
 print("\nComputing zero-shot baseline on val set…")
 model.eval()
 model = model.to(torch.float32)
 
-BASELINE_SAMPLES = min(BASELINE_SAMPLES, len(val_samples))
-BASELINE_BATCH_SIZE = max(1, BASELINE_BATCH_SIZE)
-BASELINE_NUM_BEAMS = max(1, BASELINE_NUM_BEAMS)
-BASELINE_MAX_NEW_TOKENS = min(
-    BASELINE_MAX_NEW_TOKENS,
-    int(getattr(model.config, "max_target_positions", 448)),
-)
-BASELINE_MAX_LENGTH = min(
-    BASELINE_MAX_NEW_TOKENS + len(decoder_prompt_ids) + 1,
-    int(getattr(model.config, "max_target_positions", 448)),
-)
-BASELINE_USE_AUTOCAST = torch.cuda.is_available() and getattr(torch.cuda, "is_bf16_supported", lambda: False)()
-
-print(
-    "Baseline config : "
-    f"samples={BASELINE_SAMPLES}  "
-    f"batch_size={BASELINE_BATCH_SIZE}  "
-    f"beams={BASELINE_NUM_BEAMS}  "
-    f"max_length={BASELINE_MAX_LENGTH}  "
-    f"autocast={'bf16' if BASELINE_USE_AUTOCAST else 'off'}"
-)
-
-
-def transcribe_batch(samples: List[dict]) -> Tuple[List[str], List[str]]:
-    feature_tensors = []
-    attention_masks = []
-    refs = []
-
-    for sample in samples:
-        array = load_audio(sample)
-        inputs = processor(
-            array,
-            sampling_rate=SAMPLE_RATE,
-            return_tensors="pt",
-            return_attention_mask=True,
-        )
-        feature_tensors.append(inputs.input_features[0])
-        attention_masks.append(inputs.attention_mask[0])
-        refs.append(normalize_text(sample["text"]))
-
-    input_features = torch.stack(feature_tensors).to(model.device)
-    attention_mask = torch.stack(attention_masks).to(model.device)
-    autocast_ctx = (
-        torch.autocast(device_type="cuda", dtype=torch.bfloat16)
-        if BASELINE_USE_AUTOCAST
-        else nullcontext()
+def transcribe_single(sample: dict) -> Tuple[str, str]:
+    array = load_audio(sample)
+    inputs = processor(
+        array,
+        sampling_rate=SAMPLE_RATE,
+        return_tensors="pt",
+        return_attention_mask=True
     )
+    input_features = inputs.input_features.to(model.device).to(model.dtype)
+    attention_mask = inputs.attention_mask.to(model.device)
 
-    with torch.inference_mode():
-        with autocast_ctx:
-            pred_ids = model.generate(
-                input_features,
-                attention_mask=attention_mask,
-                num_beams=BASELINE_NUM_BEAMS,
-                max_length=BASELINE_MAX_LENGTH,
-            )
+    with torch.no_grad():
+        pred_ids = model.generate(
+            input_features,
+            attention_mask=attention_mask,
+            task="transcribe",
+            language="hi",
+            num_beams=2,   
+        )
 
-    preds = [
-        normalize_text(pred)
-        for pred in processor.batch_decode(pred_ids, skip_special_tokens=True)
-    ]
-    return preds, refs
+    pred = processor.batch_decode(pred_ids, skip_special_tokens=True)[0]
+    ref  = sample["text"]
+    return normalize_text(pred), normalize_text(ref)
 
 
+BASELINE_SAMPLES = min(100, len(val_samples))  
 baseline_preds, baseline_refs = [], []
-baseline_cache_state = model.config.use_cache
 
-if BASELINE_SAMPLES > 0:
-    model.config.use_cache = True
-    baseline_subset = val_samples[:BASELINE_SAMPLES]
-    for start in tqdm(range(0, len(baseline_subset), BASELINE_BATCH_SIZE), desc="Baseline eval"):
-        batch_samples = baseline_subset[start : start + BASELINE_BATCH_SIZE]
-        preds, refs = transcribe_batch(batch_samples)
-        baseline_preds.extend(preds)
-        baseline_refs.extend(refs)
+for s in tqdm(val_samples[:BASELINE_SAMPLES], desc="Baseline eval"):
+    pred, ref = transcribe_single(s)
+    baseline_preds.append(pred)
+    baseline_refs.append(ref)
 
-    baseline_wer = wer(baseline_refs, baseline_preds)
-    baseline_cer = cer(baseline_refs, baseline_preds)
+baseline_wer = wer(baseline_refs, baseline_preds)
+baseline_cer = cer(baseline_refs, baseline_preds)
 
-    print("\n" + "="*55)
-    print("  ZERO-SHOT BASELINE (Whisper-large-v3, no FT)")
-    print("="*55)
-    print(f"  WER : {baseline_wer*100:.2f}%")
-    print(f"  CER : {baseline_cer*100:.2f}%")
-    print("="*55)
-else:
-    print("\nSkipping zero-shot baseline (BASELINE_SAMPLES=0)")
-
-model.config.use_cache = baseline_cache_state
-
-
-
+print("\n" + "="*55)
+print("  ZERO-SHOT BASELINE (Whisper-large-v3, no FT)")
+print("="*55)
+print(f"  WER : {baseline_wer*100:.2f}%")
+print(f"  CER : {baseline_cer*100:.2f}%")
+print("="*55)
 
 
 
 lora_config = LoraConfig(
-    r=64,
-    lora_alpha=128,
-    target_modules=["q_proj", "v_proj", "k_proj", "out_proj", "fc1", "fc2"],
-    lora_dropout=0.05,
+    r=16,
+    lora_alpha=32,
+    target_modules=["q_proj", "v_proj", "k_proj", "out_proj"],
+    lora_dropout=0.1,
     bias="none"
 )
 model = get_peft_model(model, lora_config)
@@ -366,45 +284,18 @@ model.print_trainable_parameters()
 model = model.to(torch.float32)
 print("Model cast to float32 ✓")
 
-# ── re-apply generation settings after LoRA wrapping ─────────────────────
-model.config.forced_decoder_ids = None
-model.generation_config.forced_decoder_ids = None
-model.generation_config.language = WHISPER_LANGUAGE
-model.generation_config.task = WHISPER_TASK
-print("generation settings re-applied after LoRA ✓")
+# ── FIX: re-apply after LoRA wrapping ──────────────────────
+model.config.forced_decoder_ids            = forced_decoder_ids
+model.generation_config.forced_decoder_ids = forced_decoder_ids
+print("forced_decoder_ids re-applied after LoRA ✓")
 
 model.enable_input_require_grads()
 model.gradient_checkpointing_enable()
-print("Gradient checkpointing ✓")                  
+print("Gradient checkpointing ✓")
 
 
 
-
-
-VOCAB_SIZE = processor.tokenizer.vocab_size
-MAX_TARGET_POSITIONS = int(getattr(model.config, "max_target_positions", 448))
-TOKENIZER_BOS_ID = processor.tokenizer.bos_token_id
-EOS_TOKEN_ID = processor.tokenizer.eos_token_id
-PAD_TOKEN_ID = processor.tokenizer.pad_token_id
-DECODER_START_TOKEN_ID = model.config.decoder_start_token_id
-print(f"Max decoder positions : {MAX_TARGET_POSITIONS}")
-
-
-def encode_label_ids(text: str) -> List[int]:
-    label_ids = processor.tokenizer(
-        normalize_text(text),
-        add_special_tokens=True,
-    ).input_ids
-
-    label_ids = [t for t in label_ids if 0 <= t < VOCAB_SIZE]
-
-    if len(label_ids) > MAX_TARGET_POSITIONS:
-        label_ids = label_ids[:MAX_TARGET_POSITIONS]
-        if EOS_TOKEN_ID is not None:
-            label_ids[-1] = EOS_TOKEN_ID
-
-    return label_ids
-
+VOCAB_SIZE = len(processor.tokenizer)
 
 class BhojpuriDataset(Dataset):
     def __init__(self, samples: list, augment: bool = False):
@@ -429,7 +320,16 @@ class BhojpuriDataset(Dataset):
         if self.augment:
             features = spec_augment(features)
 
-        label_ids = encode_label_ids(sample["text"])
+        label_ids = processor.tokenizer(
+            normalize_text(sample["text"]),
+            return_tensors="pt"
+        ).input_ids[0].tolist()
+
+        # ── FIX: clamp label IDs to valid vocab range ──────
+        label_ids = [
+            t for t in label_ids
+            if 0 <= t < VOCAB_SIZE
+        ]
 
         return {
             "input_features": features,
@@ -449,8 +349,6 @@ print("Label IDs (first 10):", sample_out["labels"][:10])
 print("Decoded:", processor.tokenizer.decode(sample_out["labels"]))
 
 
-
-
 @dataclass
 class DataCollatorSpeechSeq2SeqWithPadding:
     processor: Any
@@ -466,41 +364,27 @@ class DataCollatorSpeechSeq2SeqWithPadding:
         labels_batch   = self.processor.tokenizer.pad(
             label_features, return_tensors="pt", return_attention_mask=True
         )
-        labels = labels_batch["input_ids"]
-        
-        # Identify prefix length (usually 4 tokens for Whisper)
-        prefix_ids = self.processor.tokenizer("", add_special_tokens=True).input_ids
-        if prefix_ids[-1] == self.processor.tokenizer.eos_token_id:
-            prefix_ids = prefix_ids[:-1]
-        n_prefix = len(prefix_ids)
+        labels = labels_batch["input_ids"].masked_fill(
+            labels_batch["attention_mask"].ne(1), -100
+        )
+        if (labels[:, 0] == self.processor.tokenizer.bos_token_id).all():
+            labels = labels[:, 1:]
 
-        # ── Construct decoder_input_ids ──
-        decoder_input_ids = labels.clone()
-        decoder_input_ids.masked_fill_(labels_batch["attention_mask"].ne(1), PAD_TOKEN_ID)
-
-        # ── Final Labels Processing ──
-        labels = labels.masked_fill(labels_batch["attention_mask"].ne(1), -100)
-        if n_prefix > 0:
-            labels[:, :n_prefix] = -100
-        
+        # ── FIX: clamp to valid vocab range (second safety layer) ──
         valid_mask = labels != -100
         labels[valid_mask] = labels[valid_mask].clamp(0, VOCAB_SIZE - 1)
 
-        if labels.size(1) > MAX_TARGET_POSITIONS:
-            labels = labels[:, :MAX_TARGET_POSITIONS]
-            decoder_input_ids = decoder_input_ids[:, :MAX_TARGET_POSITIONS]
-            label_lengths = labels_batch["attention_mask"].sum(dim=1)
-            truncated_rows = label_lengths > MAX_TARGET_POSITIONS
-            if EOS_TOKEN_ID is not None and truncated_rows.any():
-                labels[truncated_rows, MAX_TARGET_POSITIONS - 1] = EOS_TOKEN_ID
-
         batch["labels"] = labels
-        batch["decoder_input_ids"] = decoder_input_ids
+
+        decoder_start = self.processor.tokenizer.convert_tokens_to_ids("<|startoftranscript|>")
+        shifted = labels.masked_fill(labels == -100, self.processor.tokenizer.pad_token_id)
+        bos_col = torch.full((shifted.size(0), 1), decoder_start, dtype=torch.long)
+        batch["decoder_input_ids"] = torch.cat([bos_col, shifted[:, :-1]], dim=1)
+
         return batch
 
 data_collator = DataCollatorSpeechSeq2SeqWithPadding(processor=processor)
 print("Data collator ✓")
-
 
 
 def compute_metrics(pred):
@@ -519,7 +403,6 @@ def compute_metrics(pred):
     }
 
 print("compute_metrics ✓")
-
 
 
 class EpochSummaryCallback(TrainerCallback):
@@ -575,36 +458,29 @@ epoch_callback = EpochSummaryCallback()
 print("Callback ✓")
 
 
-
-
-steps_per_epoch = math.ceil(
-    len(train_dataset) / PER_DEVICE_TRAIN_BATCH_SIZE / GRADIENT_ACCUMULATION_STEPS
-)
-warmup_steps = max(1, math.ceil(WARMUP_RATIO * steps_per_epoch * NUM_TRAIN_EPOCHS))
-
 training_args = Seq2SeqTrainingArguments(
     output_dir=OUTPUT_DIR,
     remove_unused_columns=False,
-    per_device_train_batch_size=PER_DEVICE_TRAIN_BATCH_SIZE,
-    per_device_eval_batch_size=PER_DEVICE_EVAL_BATCH_SIZE,
-    gradient_accumulation_steps=GRADIENT_ACCUMULATION_STEPS,
+    per_device_train_batch_size=1,
+    per_device_eval_batch_size=1,       # ← reduced from 2 (OOM fix)
+    gradient_accumulation_steps=4,      # ← reduced from 16 (faster for smoke test)
     gradient_checkpointing=True,
     dataloader_pin_memory=False,
-    dataloader_num_workers=0,          
+    dataloader_num_workers=0,           # ← added (avoids multiprocess issues on Kaggle)
 
-    learning_rate=LEARNING_RATE,
+    learning_rate=3e-4,
     lr_scheduler_type="cosine",
-    warmup_steps=warmup_steps,
+    warmup_ratio=0.06,
 
-    num_train_epochs=NUM_TRAIN_EPOCHS,
+    num_train_epochs=6,              
 
-    fp16=False,                        
-    bf16=True,                        
+    fp16=False,                         # ← FIX: was True, conflicted with float32 model
+    bf16=True,                          # ← FIX: bf16 is stable with LoRA
     fp16_full_eval=False,
 
     predict_with_generate=True,
-    generation_max_length=GENERATION_MAX_LENGTH,
-    generation_num_beams=GENERATION_NUM_BEAMS,
+    generation_max_length=128,          # ← reduced from 225 
+    generation_num_beams=2,            
 
     eval_strategy="epoch",
     save_strategy="epoch",
@@ -612,20 +488,19 @@ training_args = Seq2SeqTrainingArguments(
     metric_for_best_model="wer",
     greater_is_better=False,
 
-    logging_steps=50,
+    logging_steps=5,
     logging_first_step=True,
-    save_total_limit=3,               
+    save_total_limit=1,                 # ← reduced from 2 (saves disk)
     max_grad_norm=1.0,
     report_to="none",
 
-    label_smoothing_factor=LABEL_SMOOTHING_FACTOR,
+    label_smoothing_factor=0.1,
 )
 print("Training args ✓")
 
 
-
-if torch.cuda.is_available():
-    torch.cuda.empty_cache()
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+torch.cuda.empty_cache()
 gc.collect()
 
 trainer = Seq2SeqTrainer(
@@ -648,6 +523,4 @@ print("Batch OK ✓\n")
 
 print("Starting training…\n")
 trainer.train()
-trainer.save_model(SAVE_PATH)
-processor.save_pretrained(SAVE_PATH)
 print("\nTraining complete ✓")
