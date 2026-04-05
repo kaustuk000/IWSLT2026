@@ -487,11 +487,11 @@ training_args = Seq2SeqTrainingArguments(
     dataloader_pin_memory=False,
     dataloader_num_workers=0,         
 
-    learning_rate=3e-4,
-    lr_scheduler_type="cosine",
-    warmup_ratio=0.06,
+    learning_rate=1e-4,
+    lr_scheduler_type="linear",
+    warmup_ratio=0.05,
 
-    num_train_epochs=4,               
+    num_train_epochs=10,               
 
     fp16=False,                        
     bf16=True,                          
@@ -509,7 +509,7 @@ training_args = Seq2SeqTrainingArguments(
 
     logging_steps=5,
     logging_first_step=True,
-    save_total_limit=1,              
+    save_total_limit=2,              
     max_grad_norm=1.0,
     report_to="none",
 
@@ -546,3 +546,18 @@ print("Batch OK ✓\n")
 print("Starting training…\n")
 trainer.train()
 print("\nTraining complete ✓")
+
+
+print("\nSaving model…")
+
+# 1. Save the best LoRA adapter weights
+trainer.save_model(OUTPUT_DIR)
+
+# 2. Merge LoRA weights into the base model and save full model
+merged_model = model.merge_and_unload()
+merged_model.save_pretrained(SAVE_PATH)
+processor.save_pretrained(SAVE_PATH)
+
+print(f"  LoRA adapter saved → {OUTPUT_DIR}")
+print(f"  Merged full model  → {SAVE_PATH}")
+print("Save complete ✓")
