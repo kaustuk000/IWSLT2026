@@ -14,6 +14,9 @@ print(f"Active GPU   : {torch.cuda.get_device_name(0)}")
 print(f"VRAM         : {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
 print("done")
 
+
+
+
 import gc, math, json, itertools, subprocess, tempfile
 import re
 import random
@@ -47,10 +50,11 @@ if torch.cuda.is_available():
     print(f"GPU    : {torch.cuda.get_device_name(0)}")
 
 
+
 MODEL_NAME    = "openai/whisper-large-v3"
 DATASET_NAME  = "ai4bharat/Rural_Women_Bhojpuri"
 SAMPLE_RATE   = 16000
-MAX_AUDIO_SEC = 20      
+MAX_AUDIO_SEC = 20          
 SEEDS         = [42, 1337, 2024]
 WORK_DIR      = os.environ.get("WORK_DIR", os.getcwd())
 OUTPUT_DIR    = os.path.join(WORK_DIR, "whisper-bhojpuri")
@@ -62,14 +66,15 @@ SPLIT_SYNTHETIC = "train_synthetic"
 SPLIT_BENCHMARK = "benchmark"
 
 REAL_SAMPLES      = 400
-SYNTHETIC_SAMPLES = 5000
-TEST_SIZE         = 222
-VAL_SIZE          = 222
+SYNTHETIC_SAMPLES = 200
+TEST_SIZE         = 20
+VAL_SIZE          = 20
 TRAIN_SIZE        = REAL_SAMPLES + SYNTHETIC_SAMPLES
 
 print(f"Train : {TRAIN_SIZE}")
 print(f"Val   : {VAL_SIZE}")
 print(f"Test  : {TEST_SIZE}  ← only touched ONCE at the very end")
+
 
 
 def set_seed(seed: int):
@@ -94,7 +99,7 @@ print(f"  train_synthetic : {len(syn_samples)} samples")
 
 print("Loading benchmark…")
 ds_bench = load_dataset(DATASET_NAME, split=SPLIT_BENCHMARK, streaming=True)
-bench_samples = list(ds_bench.take(VAL_SIZE + TEST_SIZE)) 
+bench_samples = list(ds_bench.take(VAL_SIZE + TEST_SIZE))  
 print(f"  benchmark       : {len(bench_samples)} samples")
 
 random.seed(42)
@@ -120,6 +125,7 @@ print(f"  Val   : {VAL_SIZE}")
 print(f"  Test  : {TEST_SIZE}  ← do NOT touch until final eval")
 
 
+
 DEVANAGARI_DIGITS = {
     "०": "0", "१": "1", "२": "2", "३": "3", "४": "4",
     "५": "5", "६": "6", "७": "7", "८": "8", "९": "9"
@@ -136,6 +142,7 @@ def normalize_text(text: str) -> str:
 print("Normalization check:", normalize_text("हेलो, World! ३४५"))
 
 
+
 def load_audio(sample: dict) -> np.ndarray:
     array = np.array(sample["audio"]["array"], dtype=np.float32)
     src_sr = sample["audio"]["sampling_rate"]
@@ -150,6 +157,7 @@ def play_audio(sample):
     display(Audio(array, rate=SAMPLE_RATE))
 
 play_audio(train_samples[0])
+
 
 
 def add_gaussian_noise(array: np.ndarray, snr_db_range=(15, 30)) -> np.ndarray:
@@ -251,7 +259,7 @@ def transcribe_single(sample: dict) -> Tuple[str, str]:
     return normalize_text(pred), normalize_text(ref)
 
 
-BASELINE_SAMPLES = min(100, len(val_samples))  
+BASELINE_SAMPLES = min(100, len(val_samples))   
 baseline_preds, baseline_refs = [], []
 
 for s in tqdm(val_samples[:BASELINE_SAMPLES], desc="Baseline eval"):
@@ -271,6 +279,7 @@ print("="*55)
 
 
 
+
 lora_config = LoraConfig(
     r=16,
     lora_alpha=32,
@@ -284,7 +293,7 @@ model.print_trainable_parameters()
 model = model.to(torch.float32)
 print("Model cast to float32 ✓")
 
-# ── FIX: re-apply after LoRA wrapping ──────────────────────
+# ──re-apply after LoRA wrapping ──────────────────────
 model.config.forced_decoder_ids            = forced_decoder_ids
 model.generation_config.forced_decoder_ids = forced_decoder_ids
 print("forced_decoder_ids re-applied after LoRA ✓")
@@ -295,7 +304,9 @@ print("Gradient checkpointing ✓")
 
 
 
-VOCAB_SIZE = len(processor.tokenizer)
+
+
+VOCAB_SIZE = processor.tokenizer.vocab_size   # ← used to clamp labels
 
 class BhojpuriDataset(Dataset):
     def __init__(self, samples: list, augment: bool = False):
@@ -325,7 +336,7 @@ class BhojpuriDataset(Dataset):
             return_tensors="pt"
         ).input_ids[0].tolist()
 
-        # ── FIX: clamp label IDs to valid vocab range ──────
+        # ── clamp label IDs to valid vocab range ──────
         label_ids = [
             t for t in label_ids
             if 0 <= t < VOCAB_SIZE
@@ -349,6 +360,8 @@ print("Label IDs (first 10):", sample_out["labels"][:10])
 print("Decoded:", processor.tokenizer.decode(sample_out["labels"]))
 
 
+
+
 @dataclass
 class DataCollatorSpeechSeq2SeqWithPadding:
     processor: Any
@@ -370,7 +383,7 @@ class DataCollatorSpeechSeq2SeqWithPadding:
         if (labels[:, 0] == self.processor.tokenizer.bos_token_id).all():
             labels = labels[:, 1:]
 
-        # ── FIX: clamp to valid vocab range (second safety layer) ──
+        # ── clamp to valid vocab range (second safety layer) ──
         valid_mask = labels != -100
         labels[valid_mask] = labels[valid_mask].clamp(0, VOCAB_SIZE - 1)
 
@@ -385,6 +398,8 @@ class DataCollatorSpeechSeq2SeqWithPadding:
 
 data_collator = DataCollatorSpeechSeq2SeqWithPadding(processor=processor)
 print("Data collator ✓")
+
+
 
 
 def compute_metrics(pred):
@@ -403,6 +418,8 @@ def compute_metrics(pred):
     }
 
 print("compute_metrics ✓")
+
+
 
 
 class EpochSummaryCallback(TrainerCallback):
@@ -458,29 +475,31 @@ epoch_callback = EpochSummaryCallback()
 print("Callback ✓")
 
 
+
+
 training_args = Seq2SeqTrainingArguments(
     output_dir=OUTPUT_DIR,
     remove_unused_columns=False,
     per_device_train_batch_size=1,
-    per_device_eval_batch_size=1,       # ← reduced from 2 (OOM fix)
-    gradient_accumulation_steps=4,      # ← reduced from 16 (faster for smoke test)
+    per_device_eval_batch_size=1,       
+    gradient_accumulation_steps=4,      
     gradient_checkpointing=True,
     dataloader_pin_memory=False,
-    dataloader_num_workers=0,           # ← added (avoids multiprocess issues on Kaggle)
+    dataloader_num_workers=0,         
 
     learning_rate=3e-4,
     lr_scheduler_type="cosine",
     warmup_ratio=0.06,
 
-    num_train_epochs=6,              
+    num_train_epochs=4,               
 
-    fp16=False,                         # ← FIX: was True, conflicted with float32 model
-    bf16=True,                          # ← FIX: bf16 is stable with LoRA
+    fp16=False,                        
+    bf16=True,                          
     fp16_full_eval=False,
 
     predict_with_generate=True,
-    generation_max_length=128,          # ← reduced from 225 
-    generation_num_beams=2,            
+    generation_max_length=128,         
+    generation_num_beams=1,            
 
     eval_strategy="epoch",
     save_strategy="epoch",
@@ -490,13 +509,16 @@ training_args = Seq2SeqTrainingArguments(
 
     logging_steps=5,
     logging_first_step=True,
-    save_total_limit=1,                 # ← reduced from 2 (saves disk)
+    save_total_limit=1,              
     max_grad_norm=1.0,
     report_to="none",
 
     label_smoothing_factor=0.1,
 )
 print("Training args ✓")
+
+
+
 
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
