@@ -550,11 +550,11 @@ print("\nTraining complete ✓")
 
 print("\nSaving model…")
 
-# 1. Save the best LoRA adapter weights
+# 1. Save the best LoRA adapter weights (trainer.model = best checkpoint)
 trainer.save_model(OUTPUT_DIR)
 
-# 2. Merge LoRA weights into the base model and save full model
-merged_model = model.merge_and_unload()
+# 2. Merge using trainer.model, NOT model
+merged_model = trainer.model.merge_and_unload()  
 merged_model.save_pretrained(SAVE_PATH)
 processor.save_pretrained(SAVE_PATH)
 
