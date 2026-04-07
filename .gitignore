@@ -8,5 +8,12 @@ wheels/
 
 # Virtual environments
 .venv
+eval
 
+model/eval_zero_shot.py
 
+mt-model/
+
+Bhojpuri_newsonair_aligned_external_1_08-03-2022_07-36/
+
+helper/transcript_builder.py
