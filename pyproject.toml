@@ -1,0 +1,26 @@
+[project]
+name = "checking"
+version = "0.1.0"
+description = "IWSLT 2026 speech translation experiments"
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+
+dependencies = [
+    "torch>=2.5,<2.7",
+    "torchaudio>=2.5,<2.7",
+    "torchvision>=0.20,<0.22",
+    "transformers>=4.46,<5",
+    "huggingface-hub>=0.26,<1",
+    "accelerate>=0.34,<2",
+    "peft>=0.13,<1",
+    "safetensors>=0.4.5,<1",
+    "numpy>=1.26,<3",
+    "pandas>=2.2,<3",
+    "scipy>=1.13,<2",
+    "tqdm>=4.66,<5",
+    "sentencepiece>=0.2,<0.3",
+    "protobuf>=4.25,<6",
+    "sacremoses>=0.1,<1",
+    "sacrebleu>=2.4,<3",
+    "soundfile>=0.12,<1",
+]
