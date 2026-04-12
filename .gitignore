@@ -33,5 +33,5 @@ model/asr_noisy_outputs.py
 inferences/
 model-whisper/
 
-data/ASR_data/
+data/ASR_data/Bhojpuri_newsonair_aligned_external_1_08-03-2022_07-36/newsonair_aligned_external_1_08-03-2022_07-36/
 data/e2e_data/
