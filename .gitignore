@@ -27,3 +27,11 @@ helper/transcript_builder.py
 
 model-mt-v1_epoch2
 
+model/train_asr_corrector.py
+model/train_mt_posteditor.py
+model/asr_noisy_outputs.py
+inferences/
+model-whisper/
+
+data/ASR_data/
+data/e2e_data/
