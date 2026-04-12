@@ -130,8 +130,8 @@ class SplitSaver:
 
 
 if __name__ == "__main__":
-    OUT_DIR = "data/MT_data"
-    raw_df = pd.read_csv("data/MT_data/raw_hin_bho.csv")   
+    OUT_DIR = "data/MT_data/noisy_data"
+    raw_df = pd.read_csv("data/MT_data/noisy_data/hi_bho_noisy.csv")   
 
     built_df = MTDatasetBuilder(raw_df, out_dir=OUT_DIR).build()
     SplitSaver(built_df, out_dir=OUT_DIR).save()
