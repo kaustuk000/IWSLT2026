@@ -173,7 +173,7 @@ def evaluate_generation_metrics(model, tokenizer, dev_loader, tgt_lang, device, 
     hypotheses = []
     references = []
     generator = unwrap(model)
-    forced_bos_token_id = tokenizer.lang_code_to_id[tgt_lang]
+    forced_bos_token_id = tokenizer.convert_tokens_to_ids(tgt_lang)
 
     for batch_idx, batch in enumerate(tqdm(dev_loader, desc="Generation eval", leave=False)):
         if max_batches and batch_idx >= max_batches:
