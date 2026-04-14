@@ -53,7 +53,7 @@ def parse_args():
 
     # Architecture
     p.add_argument("--aggregation_layers", nargs="+", type=int,
-                   default=[6, 8, 10, 12],
+                   default=[16, 20, 24, 31],
                    help="ASR encoder layer indices to aggregate. "
                         "Pass 0 alone to use ALL layers.")
     p.add_argument("--adapter_type", choices=["length", "m_adapter"], default="length",
