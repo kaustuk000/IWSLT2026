@@ -1,31 +1,32 @@
 [project]
-name = "IWSLT2026"
+name = "comet-iwslt2026"
 version = "0.1.0"
-description = "IWSLT2026 bhojpuri-hindi translation"
+description = "IWSLT 2026 Comet based evalution environment"
 readme = "README.md"
 requires-python = ">=3.12"
-
 dependencies = [
-    "torch==2.10.0",
-    "torchvision==0.25.0",
-    "torchaudio==2.10.0",
-    "transformers>=5.0.0",
-    "datasets>=4.8.3",
-    "pandas>=2.3.3",
-    "accelerate>=1.12.0",
-    "peft>=0.18.1",
-    "scipy>=1.16.3",
-    "tqdm>=4.67.3",
-    "sentencepiece>=0.2.1",
-    "torchcodec>=0.10.0",
-    "sacrebleu>=2.6.0",
-    "librosa>=0.11.0",
-    "jiwer>=4.0.0",
-    "ipython>=9.12.0",
-    "tiktoken>=0.12.0",
-    "protobuf>=7.34.1",
-    "soundfile>=0.13.1",
+    "accelerate>=1.13.0",
     "bitsandbytes>=0.49.2",
+    "datasets>=4.8.4",
+    "ipython>=9.12.0",
+    "jiwer>=4.0.0",
+    "librosa>=0.11.0",
+    "litlogger>=2026.3.17",
+    "litmodels>=0.1.8",
+    "peft>=0.19.0",
+    "protobuf>=4.25.9",
+    "sacrebleu>=2.6.0",
+    "scipy>=1.17.1",
+    "sentencepiece>=0.2.1",
+    "soundfile>=0.13.1",
+    "tiktoken>=0.12.0",
+    "torch>=2.11.0",
+    "torchaudio>=2.11.0",
+    "torchcodec>=0.11.1",
+    "torchvision>=0.26.0",
+    "tqdm>=4.67.3",
+    "transformers>=4.57.6",
+    "unbabel-comet>=2.2.7",
 ]
 
 [tool.uv.sources]
