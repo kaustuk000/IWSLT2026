@@ -1,0 +1,8 @@
+weights/
+/data/
+.venv/
+__pycache__/
+*.pyc
+checkpoints/
+cascade_outputs/
+test_predictions/

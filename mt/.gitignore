@@ -1,0 +1,36 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+eval
+
+model/eval_zero_shot.py
+model/mt_inference.py
+model/cascade_inference.py
+model/asr_output.py
+
+vocab_out3/
+cascade_outputs/
+hindi_corpus/
+
+mt-model/
+
+Bhojpuri_newsonair_aligned_external_1_08-03-2022_07-36/
+
+helper/transcript_builder.py
+
+model-mt-v1_epoch2
+
+model/train_asr_corrector.py
+model/train_mt_posteditor.py
+model/asr_noisy_outputs.py
+model-whisper
+
+data/ASR_data/
+data/e2e_data/
