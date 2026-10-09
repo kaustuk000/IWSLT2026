@@ -76,7 +76,7 @@ data/iwslt2026_bho_hi/test-2026/                     stamped.tsv, wav/
 
 ## Pretrained weights
 
-All weights are published on Hugging Face in `safetensors` format.
+All weights are published on Hugging Face in `safetensors` format. The repositories are gated with automatic approval: log in with `hf auth login` and accept the access terms on each model page before downloading.
 
 | Submission | Hugging Face repo | Contents |
 |---|---|---|
